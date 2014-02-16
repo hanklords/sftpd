@@ -48,16 +48,15 @@
 #define SSH_FX_CONNECTION_LOST               7
 #define SSH_FX_OP_UNSUPPORTED                8
 
-#define READ_VAR(data) do {\
-  if((len_read = read(STDIN_FILENO, &data, sizeof(data))) == -1 || len_read == 0) \
-    exit(-1); \
-  in_length -= len_read; \
-} while(0)
 
 #define READ_DATA(data, length) do {\
   if((len_read = read(STDIN_FILENO, data, length)) == -1 || len_read == 0) \
     exit(-1); \
   in_length -= len_read; \
+} while(0)
+
+#define READ_VAR(data) do {\
+  READ_DATA(&data, sizeof(data)); \
 } while(0)
 
 #define READ_STRING(data) do {\
@@ -69,15 +68,19 @@
     _msg_length_n = 0; \
 } while(0)
 
-#define WRITE_VAR(v, s) do { \
+#define WRITE_DATA(v, s) do { \
   memcpy(_msg_data + _msg_length_n, v, s); \
   _msg_length_n += s;    \
 } while(0)
 
+#define WRITE_VAR(v) do { \
+  WRITE_DATA(&v, sizeof(v)); \
+} while(0)
+
 #define WRITE_STR(str, l) do { \
   str_length = htonl(l); \
-  WRITE_VAR(&str_length, sizeof(str_length)); \
-  WRITE_VAR(str, l); \
+  WRITE_VAR(str_length); \
+  WRITE_DATA(str, l); \
 } while(0)
 
 #define WRITE(type) do {\
@@ -93,8 +96,8 @@
 
 #define WRITE_STATUS(id, code) do {\
     error_code = htonl(code); \
-    WRITE_VAR(&id, sizeof(id)); \
-    WRITE_VAR(&error_code, sizeof(error_code)); \
+    WRITE_VAR(id); \
+    WRITE_VAR(error_code); \
     WRITE_STR("", 0); \
     WRITE_STR("", 0); \
     WRITE(SSH_FXP_STATUS); \
@@ -130,7 +133,7 @@ int main(int argc, char* argv[]) {
         READ_VAR(version);
         
         version = htonl(3);
-        WRITE_VAR(&version, sizeof(version));
+        WRITE_VAR(version);
         WRITE(SSH_FXP_VERSION);
         break;
         
@@ -143,11 +146,11 @@ int main(int argc, char* argv[]) {
         count = htonl(1);
         flags = 0;
         
-        WRITE_VAR(&id, sizeof(id));
-        WRITE_VAR(&count, sizeof(count));
+        WRITE_VAR(id);
+        WRITE_VAR(count);
         WRITE_STR(out_buf, strlen(out_buf));
         WRITE_STR(out_buf, strlen(out_buf));
-        WRITE_VAR(&flags, sizeof(flags));
+        WRITE_VAR(flags);
         WRITE(SSH_FXP_NAME);
         break;
         
@@ -160,7 +163,7 @@ int main(int argc, char* argv[]) {
         id = id;
         str_length = htonl(sizeof(handle));
 
-        WRITE_VAR(&id, sizeof(id));
+        WRITE_VAR(id);
         WRITE_STR(&handle, sizeof(handle));
         WRITE(SSH_FXP_HANDLE);
         break;
@@ -174,9 +177,9 @@ int main(int argc, char* argv[]) {
         
         id = id;
         count = 0;
-        WRITE_VAR(&id, sizeof(id));
+        WRITE_VAR(id);
         fxp_name_count_addr = _msg_data + _msg_length_n;
-        WRITE_VAR(&count, sizeof(count));
+        WRITE_VAR(count);
         while(dir && (ent = readdir(dir))) {
             if(!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
                 continue;
@@ -186,7 +189,7 @@ int main(int argc, char* argv[]) {
             
             WRITE_STR(ent->d_name, strlen(ent->d_name));
             WRITE_STR(ent->d_name, strlen(ent->d_name));
-            WRITE_VAR(&flags, sizeof(flags));
+            WRITE_VAR(flags);
         }
         
         if(count > 0) {
@@ -220,4 +223,4 @@ int main(int argc, char* argv[]) {
   }
   
   return 0;
-} 
+}
