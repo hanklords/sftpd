@@ -161,7 +161,6 @@ int main(int argc, char* argv[]) {
         handle = open(in_buf, O_RDONLY);
         
         id = id;
-        str_length = htonl(sizeof(handle));
 
         WRITE_VAR(id);
         WRITE_STR(&handle, sizeof(handle));
