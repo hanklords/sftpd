@@ -142,7 +142,6 @@ int main(int argc, char* argv[]) {
         READ_STRING(in_buf);
         
         realpath(in_buf, out_buf);
-        id = id;
         count = htonl(1);
         flags = 0;
         
@@ -160,8 +159,6 @@ int main(int argc, char* argv[]) {
         READ_STRING(in_buf);
         handle = open(in_buf, O_RDONLY);
         
-        id = id;
-
         WRITE_VAR(id);
         WRITE_STR(&handle, sizeof(handle));
         WRITE(SSH_FXP_HANDLE);
@@ -174,7 +171,6 @@ int main(int argc, char* argv[]) {
 
         dir = fdopendir(handle);
         
-        id = id;
         count = 0;
         WRITE_VAR(id);
         fxp_name_count_addr = _msg_data + _msg_length_n;
