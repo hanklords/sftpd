@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <time.h>
 #include <fcntl.h>
 #include <arpa/inet.h>
@@ -112,7 +113,7 @@
     WRITE_STR("", 0); \
     WRITE_STR("", 0); \
     WRITE(SSH_FXP_STATUS); \
-} while(0);
+} while(0)
 
 #define GET_RIGHT_SYMBOL(st, r, v) ((st)->st_mode & (r) ? v : '-')
 
@@ -157,6 +158,26 @@ char* ls_l(const char* name, const struct stat* st) {
     WRITE_STR(ls_l_str, strlen(ls_l_str)); \
 } while(0)
 
+#define WRITE_ATTRS(st) do {\
+    attr_flags = htonl(SSH_FILEXFER_ATTR_SIZE           \
+                     | SSH_FILEXFER_ATTR_UIDGID         \
+                     | SSH_FILEXFER_ATTR_PERMISSIONS    \
+                     | SSH_FILEXFER_ATTR_ACMODTIME      \
+                );                                 \
+    attr_size = htobe64((st)->st_size);                    \
+    attr_uid = htonl((st)->st_uid);                 \
+    attr_gid = htonl((st)->st_gid);                 \
+    attr_permissions = htonl((st)->st_mode);                 \
+    attr_atime = htonl((st)->st_atim.tv_sec);                 \
+    attr_mtime = htonl((st)->st_mtim.tv_sec);                 \
+                     \
+    WRITE_VAR(attr_flags);                 \
+    WRITE_VAR(attr_size);                 \
+    WRITE_VAR(attr_uid); WRITE_VAR(attr_gid);                 \
+    WRITE_VAR(attr_permissions);                 \
+    WRITE_VAR(attr_atime); WRITE_VAR(attr_mtime);                 \
+} while(0)
+
 int main(int argc, char* argv[]) {
   uint32_t _msg_length_n, _msg_length;
   uint8_t _msg_type;
@@ -170,11 +191,11 @@ int main(int argc, char* argv[]) {
   uint32_t count;
   
   /* attr */
-  uint32_t flags;
-  uint64_t size;
-  uint32_t uid, gid;
-  uint32_t permissions;
-  uint32_t atime, mtime;
+  uint32_t attr_flags;
+  uint64_t attr_size;
+  uint32_t attr_uid, attr_gid;
+  uint32_t attr_permissions;
+  uint32_t attr_atime, attr_mtime;
   
   uint32_t error_code;
   FTS* dir_handle;
@@ -183,6 +204,8 @@ int main(int argc, char* argv[]) {
   char* ls_l_str;
   char* fxp_name_count_addr;
   char* dir_path[2] = {0};
+  
+  struct stat st;
   
   WRITE_RESET();
   while((len_read = read(0, &in_length, sizeof(in_length))) != -1 && len_read != 0) {
@@ -205,27 +228,66 @@ int main(int argc, char* argv[]) {
         
         realpath(in_buf, out_buf);
         count = htonl(1);
-        flags = 0;
+        attr_flags = 0;
         
         WRITE_VAR(id);
         WRITE_VAR(count);
         WRITE_STR(out_buf, strlen(out_buf));
         WRITE_STR(out_buf, strlen(out_buf));
-        WRITE_VAR(flags);
+        WRITE_VAR(attr_flags);
         WRITE(SSH_FXP_NAME);
         break;
         
+      case SSH_FXP_LSTAT:
+        READ_VAR(id);
+        READ_STRING(in_buf);
+
+        if(lstat(in_buf, &st) != -1) {
+            WRITE_VAR(id);
+            WRITE_ATTRS(&st);
+            WRITE(SSH_FXP_ATTRS);
+        } else if(errno == ENOENT) {
+            WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
+         } else if(errno == EACCES) {
+            WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
+        } else {
+            WRITE_STATUS(id, SSH_FX_FAILURE);
+        }
+        break;
+        
+      case SSH_FXP_STAT:
+        READ_VAR(id);
+        READ_STRING(in_buf);
+
+        if(stat(in_buf, &st) != -1) {
+            WRITE_VAR(id);
+            WRITE_ATTRS(&st);
+            WRITE(SSH_FXP_ATTRS);
+        } else if(errno == ENOENT) {
+            WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
+        } else if(errno == EACCES) {
+            WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
+        } else {
+            WRITE_STATUS(id, SSH_FX_FAILURE);
+        }
+        break;
+    
       case SSH_FXP_OPENDIR:
         READ_VAR(id);
-        
         READ_STRING(in_buf);
         dir_path[0] = in_buf;
         dir_handle = fts_open(dir_path, FTS_PHYSICAL, NULL);
-        fts_read(dir_handle);
-        
-        WRITE_VAR(id);
-        WRITE_STR(&dir_handle, sizeof(dir_handle));
-        WRITE(SSH_FXP_HANDLE);
+        if(dir_handle && (ent = fts_read(dir_handle)) && ent->fts_info == FTS_D) {
+            WRITE_VAR(id);
+            WRITE_STR(&dir_handle, sizeof(dir_handle));
+            WRITE(SSH_FXP_HANDLE);
+        } else if(errno == ENOENT) {
+            WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
+        } else if(errno == EACCES) {
+            WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
+        } else {
+           WRITE_STATUS(id, SSH_FX_FAILURE);
+        }
         break;
         
       case SSH_FXP_READDIR:
@@ -244,25 +306,9 @@ int main(int argc, char* argv[]) {
               continue;
             
             count++;
-            flags = htonl(SSH_FILEXFER_ATTR_SIZE
-                    | SSH_FILEXFER_ATTR_UIDGID
-                    | SSH_FILEXFER_ATTR_PERMISSIONS
-                    | SSH_FILEXFER_ATTR_ACMODTIME
-                    );
-            size = htobe64(ent->fts_statp->st_size);
-            uid = htonl(ent->fts_statp->st_uid);
-            gid = htonl(ent->fts_statp->st_gid);
-            permissions = htonl(ent->fts_statp->st_mode);
-            atime = htonl(ent->fts_statp->st_atim.tv_sec);
-            mtime = htonl(ent->fts_statp->st_mtim.tv_sec);
-            
             WRITE_STR(ent->fts_name, ent->fts_namelen);
             WRITE_LS_L(ent->fts_name, ent->fts_statp); /* TODO: check it is valid */
-            WRITE_VAR(flags);
-            WRITE_VAR(size);
-            WRITE_VAR(uid); WRITE_VAR(gid);
-            WRITE_VAR(permissions);
-            WRITE_VAR(atime); WRITE_VAR(mtime);
+            WRITE_ATTRS(ent->fts_statp);
         }
         
         if(count > 0) {
@@ -271,7 +317,7 @@ int main(int argc, char* argv[]) {
             WRITE(SSH_FXP_NAME);
         } else {
             WRITE_RESET();
-            WRITE_STATUS(id, SSH_FX_EOF)
+            WRITE_STATUS(id, SSH_FX_EOF);
         }
         break;
         
@@ -282,7 +328,7 @@ int main(int argc, char* argv[]) {
 
         fts_close(dir_handle);
         
-        WRITE_STATUS(id, SSH_FX_OK)
+        WRITE_STATUS(id, SSH_FX_OK);
         break;
         
       default: /* Unknown command */
