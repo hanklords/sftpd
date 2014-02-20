@@ -59,7 +59,16 @@
 #define SSH_FILEXFER_ATTR_PERMISSIONS   0x00000004
 #define SSH_FILEXFER_ATTR_ACMODTIME     0x00000008
 #define SSH_FILEXFER_ATTR_EXTENDED      0x80000000
-    
+
+#define SSH_FXF_READ            0x00000001
+#define SSH_FXF_WRITE           0x00000002
+#define SSH_FXF_APPEND          0x00000004
+#define SSH_FXF_CREAT           0x00000008
+#define SSH_FXF_TRUNC           0x00000010
+#define SSH_FXF_EXCL            0x00000020
+
+#define MIN(a,b) ((a) < (b) ? a : b)
+
 #define READ_DATA(data, length) do {\
   if((len_read = read(STDIN_FILENO, data, length)) == -1 || len_read == 0) \
     exit(-1); \
@@ -183,13 +192,17 @@ int main(int argc, char* argv[]) {
   uint8_t _msg_type;
   char _msg_data[4096];
   
-  ssize_t len_read;
+  ssize_t len_read, file_read;
   uint32_t in_length, str_length;
   uint8_t type;
   uint32_t version;
   uint32_t id;
+  uint32_t pflags;
   uint32_t count;
   
+  uint64_t file_offset;
+  uint32_t file_len;
+
   /* attr */
   uint32_t attr_flags;
   uint64_t attr_size;
@@ -197,10 +210,11 @@ int main(int argc, char* argv[]) {
   uint32_t attr_permissions;
   uint32_t attr_atime, attr_mtime;
   
+  int fd, fd_flags;
   uint32_t error_code;
   FTS* dir_handle;
   FTSENT *ent;
-  char in_buf[4096] = {0}, out_buf[4096] = {0};
+  char in_buf[sizeof(_msg_data) - 2 * sizeof(uint32_t)] = {0}, out_buf[4096] = {0};
   char* ls_l_str;
   char* fxp_name_count_addr;
   char* dir_path[2] = {0};
@@ -238,6 +252,98 @@ int main(int argc, char* argv[]) {
         WRITE(SSH_FXP_NAME);
         break;
         
+      case SSH_FXP_OPEN:
+          READ_VAR(id);
+          READ_STRING(in_buf);
+          READ_VAR(pflags);
+          READ_VAR(attr_flags);
+          
+          pflags = ntohl(pflags);
+          attr_flags = ntohl(attr_flags);
+          if(attr_flags & SSH_FILEXFER_ATTR_SIZE)
+              READ_VAR(attr_size);
+          if(attr_flags & SSH_FILEXFER_ATTR_UIDGID) {
+              READ_VAR(attr_uid);
+              READ_VAR(attr_gid);
+          }
+          if(attr_flags &SSH_FILEXFER_ATTR_PERMISSIONS)
+              READ_VAR(attr_permissions);
+          if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {
+              READ_VAR(attr_atime);
+              READ_VAR(attr_mtime);
+          }
+          
+          if(pflags & SSH_FXF_READ & SSH_FXF_WRITE)
+              fd_flags = O_RDWR;
+          else if(pflags & SSH_FXF_READ)
+              fd_flags = O_RDONLY;
+          else if(pflags & SSH_FXF_WRITE)
+              fd_flags = O_WRONLY;
+          else {
+              WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+              break;
+          }
+          
+          if(pflags & SSH_FXF_APPEND)
+              fd_flags |= O_APPEND;
+          if(pflags & SSH_FXF_CREAT)
+              fd_flags |= O_CREAT;
+          if(pflags & SSH_FXF_TRUNC)
+              fd_flags |= O_TRUNC;
+          if(pflags & SSH_FXF_EXCL)
+              fd_flags |= O_EXCL;
+          
+          if(((pflags & SSH_FXF_EXCL) || (pflags & SSH_FXF_TRUNC)) && !(pflags & SSH_FXF_CREAT)) {
+              WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+              break;
+          }
+          
+          if((fd = open(in_buf, fd_flags)) != -1) {
+             WRITE_VAR(id);
+             WRITE_STR(&fd, sizeof(fd));
+             WRITE(SSH_FXP_HANDLE);
+          } else if(errno == ENOENT) {
+              WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
+          } else if(errno == EACCES) {
+              WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
+          } else {
+              WRITE_STATUS(id, SSH_FX_FAILURE);
+          }
+          break;
+          
+      case SSH_FXP_READ:
+          READ_VAR(id);
+          READ_VAR(str_length);
+          READ_DATA(&fd, ntohl(str_length)); /* TODO: Check length == sizeof(fd) */
+          READ_VAR(file_offset);
+          READ_VAR(file_len);
+          
+          file_offset = be64toh(file_offset);
+          file_len    = ntohl(file_len);
+          
+          if(lseek(fd, file_offset, SEEK_SET) == -1) {
+              WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+              break;
+          }
+          
+          file_read = read(fd, in_buf, MIN(sizeof(in_buf), file_len));
+          if(file_read == -1) {
+              if(errno == ENOENT) {
+                  WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
+              } else if(errno == EACCES) {
+                  WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
+              } else {
+                  WRITE_STATUS(id, SSH_FX_FAILURE);
+              }
+          } else if(file_read == 0) {
+              WRITE_STATUS(id, SSH_FX_EOF);
+          } else {
+              WRITE_VAR(id);
+              WRITE_STR(in_buf, file_read);
+              WRITE(SSH_FXP_DATA);
+          }
+          break;
+
       case SSH_FXP_LSTAT:
         READ_VAR(id);
         READ_STRING(in_buf);
@@ -248,7 +354,7 @@ int main(int argc, char* argv[]) {
             WRITE(SSH_FXP_ATTRS);
         } else if(errno == ENOENT) {
             WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
-         } else if(errno == EACCES) {
+        } else if(errno == EACCES) {
             WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
         } else {
             WRITE_STATUS(id, SSH_FX_FAILURE);
@@ -286,7 +392,7 @@ int main(int argc, char* argv[]) {
         } else if(errno == EACCES) {
             WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
         } else {
-           WRITE_STATUS(id, SSH_FX_FAILURE);
+            WRITE_STATUS(id, SSH_FX_FAILURE);
         }
         break;
         
