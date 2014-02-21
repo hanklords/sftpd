@@ -187,6 +187,32 @@ char* ls_l(const char* name, const struct stat* st) {
     WRITE_VAR(attr_atime); WRITE_VAR(attr_mtime);                 \
 } while(0)
 
+struct handle {
+    enum {HANDLE_EMPTY, HANDLE_FD, HANDLE_DIR} type;
+    union {
+        int fd;
+        FTS* dir;
+    } data;
+};
+
+#define MAX_HANDLES 1024
+struct handle handles[1024];
+int n_handles;
+
+int allocate_handle(void) {
+    int i;
+    
+    if(n_handles > MAX_HANDLES / 2)
+        return -1;
+    
+    do {
+        i = rand();
+    } while(i >= MAX_HANDLES || handles[i].type != HANDLE_EMPTY);
+    
+    n_handles++;
+    return i;
+}
+
 int main(int argc, char* argv[]) {
   uint32_t _msg_length_n, _msg_length;
   uint8_t _msg_type;
@@ -210,6 +236,7 @@ int main(int argc, char* argv[]) {
   uint32_t attr_permissions;
   uint32_t attr_atime, attr_mtime;
   
+  int h_index;
   int fd, fd_flags;
   uint32_t error_code;
   FTS* dir_handle;
@@ -262,17 +289,18 @@ int main(int argc, char* argv[]) {
           attr_flags = ntohl(attr_flags);
           if(attr_flags & SSH_FILEXFER_ATTR_SIZE)
               READ_VAR(attr_size);
-          if(attr_flags & SSH_FILEXFER_ATTR_UIDGID) {
+          if(attr_flags & SSH_FILEXFER_ATTR_UIDGID)
               READ_VAR(attr_uid);
+          if(attr_flags & SSH_FILEXFER_ATTR_UIDGID)
               READ_VAR(attr_gid);
-          }
           if(attr_flags &SSH_FILEXFER_ATTR_PERMISSIONS)
               READ_VAR(attr_permissions);
-          if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {
+          if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME)
               READ_VAR(attr_atime);
+          if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME)
               READ_VAR(attr_mtime);
-          }
           
+          /* Check fxp_open attributes */
           if(pflags & SSH_FXF_READ & SSH_FXF_WRITE)
               fd_flags = O_RDWR;
           else if(pflags & SSH_FXF_READ)
@@ -299,8 +327,12 @@ int main(int argc, char* argv[]) {
           }
           
           if((fd = open(in_buf, fd_flags)) != -1) {
+             h_index = allocate_handle(); /* TODO: check -1 */
+             handles[h_index].type = HANDLE_FD;
+             handles[h_index].data.fd = fd;
+             
              WRITE_VAR(id);
-             WRITE_STR(&fd, sizeof(fd));
+             WRITE_STR(&h_index, sizeof(h_index));
              WRITE(SSH_FXP_HANDLE);
           } else if(errno == ENOENT) {
               WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
@@ -314,10 +346,16 @@ int main(int argc, char* argv[]) {
       case SSH_FXP_READ:
           READ_VAR(id);
           READ_VAR(str_length);
-          READ_DATA(&fd, ntohl(str_length)); /* TODO: Check length == sizeof(fd) */
+          READ_DATA(&h_index, ntohl(str_length)); /* TODO: Check length == sizeof(h_index) */
           READ_VAR(file_offset);
           READ_VAR(file_len);
           
+          if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+              WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+              break;
+          }
+          
+          fd = handles[h_index].data.fd;
           file_offset = be64toh(file_offset);
           file_len    = ntohl(file_len);
           
@@ -384,8 +422,13 @@ int main(int argc, char* argv[]) {
         dir_path[0] = in_buf;
         dir_handle = fts_open(dir_path, FTS_PHYSICAL, NULL);
         if(dir_handle && (ent = fts_read(dir_handle)) && ent->fts_info == FTS_D) {
+            h_index = allocate_handle(); /* TODO: check -1 */
+            fprintf(stderr, "%i\n", h_index);
+            handles[h_index].type = HANDLE_DIR;
+            handles[h_index].data.dir = dir_handle;
+             
             WRITE_VAR(id);
-            WRITE_STR(&dir_handle, sizeof(dir_handle));
+            WRITE_STR(&h_index, sizeof(h_index));
             WRITE(SSH_FXP_HANDLE);
         } else if(errno == ENOENT) {
             WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
@@ -399,8 +442,14 @@ int main(int argc, char* argv[]) {
       case SSH_FXP_READDIR:
         READ_VAR(id);
         READ_VAR(str_length);
-        READ_DATA(&dir_handle, ntohl(str_length)); /* TODO: Check length == sizeof(dir_handle) */
-
+        READ_DATA(&h_index, ntohl(str_length)); /* TODO: Check length == sizeof(h_index) */
+        
+        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_DIR) {
+            WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+            break;
+        }
+          
+        dir_handle = handles[h_index].data.dir;
         count = 0;
         WRITE_VAR(id);
         fxp_name_count_addr = _msg_data + _msg_length_n;
@@ -430,9 +479,19 @@ int main(int argc, char* argv[]) {
       case SSH_FXP_CLOSE:
         READ_VAR(id);
         READ_VAR(str_length);
-        READ_DATA(&dir_handle, ntohl(str_length)); /* TODO: Check length == sizeof(dir_handle) */
-
-        fts_close(dir_handle);
+        READ_DATA(&h_index, ntohl(str_length)); /* TODO: Check length == sizeof(h_index) */
+        
+        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type == HANDLE_EMPTY) {
+            WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+            break;
+        }
+        
+        if(handles[h_index].type == HANDLE_DIR)
+            fts_close(handles[h_index].data.dir);
+        else if(handles[h_index].type == HANDLE_FD)
+            close(handles[h_index].data.fd);
+        
+        handles[h_index].type = HANDLE_EMPTY;
         
         WRITE_STATUS(id, SSH_FX_OK);
         break;
