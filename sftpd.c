@@ -327,7 +327,11 @@ int main(int argc, char* argv[]) {
           }
           
           if((fd = open(in_buf, fd_flags)) != -1) {
-             h_index = allocate_handle(); /* TODO: check -1 */
+             h_index = allocate_handle();
+             if(h_index == -1) {
+                 WRITE_STATUS(id, SSH_FX_FAILURE);
+                 break;
+             }
              handles[h_index].type = HANDLE_FD;
              handles[h_index].data.fd = fd;
              
@@ -422,8 +426,11 @@ int main(int argc, char* argv[]) {
         dir_path[0] = in_buf;
         dir_handle = fts_open(dir_path, FTS_PHYSICAL, NULL);
         if(dir_handle && (ent = fts_read(dir_handle)) && ent->fts_info == FTS_D) {
-            h_index = allocate_handle(); /* TODO: check -1 */
-            fprintf(stderr, "%i\n", h_index);
+            h_index = allocate_handle();
+            if(h_index == -1) {
+                 WRITE_STATUS(id, SSH_FX_FAILURE);
+                 break;
+             }
             handles[h_index].type = HANDLE_DIR;
             handles[h_index].data.dir = dir_handle;
              
