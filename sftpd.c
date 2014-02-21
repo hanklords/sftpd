@@ -122,6 +122,7 @@
     WRITE_STR("", 0); \
     WRITE_STR("", 0); \
     WRITE(SSH_FXP_STATUS); \
+    break; \
 } while(0)
 
 #define GET_RIGHT_SYMBOL(st, r, v) ((st)->st_mode & (r) ? v : '-')
@@ -307,10 +308,8 @@ int main(int argc, char* argv[]) {
               fd_flags = O_RDONLY;
           else if(pflags & SSH_FXF_WRITE)
               fd_flags = O_WRONLY;
-          else {
+          else
               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-              break;
-          }
           
           if(pflags & SSH_FXF_APPEND)
               fd_flags |= O_APPEND;
@@ -321,17 +320,13 @@ int main(int argc, char* argv[]) {
           if(pflags & SSH_FXF_EXCL)
               fd_flags |= O_EXCL;
           
-          if(((pflags & SSH_FXF_EXCL) || (pflags & SSH_FXF_TRUNC)) && !(pflags & SSH_FXF_CREAT)) {
+          if(((pflags & SSH_FXF_EXCL) || (pflags & SSH_FXF_TRUNC)) && !(pflags & SSH_FXF_CREAT))
               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-              break;
-          }
           
           if((fd = open(in_buf, fd_flags)) != -1) {
              h_index = allocate_handle();
-             if(h_index == -1) {
+             if(h_index == -1)
                  WRITE_STATUS(id, SSH_FX_FAILURE);
-                 break;
-             }
              handles[h_index].type = HANDLE_FD;
              handles[h_index].data.fd = fd;
              
@@ -354,19 +349,15 @@ int main(int argc, char* argv[]) {
           READ_VAR(file_offset);
           READ_VAR(file_len);
           
-          if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+          if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD)
               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-              break;
-          }
           
           fd = handles[h_index].data.fd;
           file_offset = be64toh(file_offset);
           file_len    = ntohl(file_len);
           
-          if(lseek(fd, file_offset, SEEK_SET) == -1) {
+          if(lseek(fd, file_offset, SEEK_SET) == -1)
               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-              break;
-          }
           
           file_read = read(fd, in_buf, MIN(sizeof(in_buf), file_len));
           if(file_read == -1) {
@@ -427,10 +418,8 @@ int main(int argc, char* argv[]) {
         dir_handle = fts_open(dir_path, FTS_PHYSICAL, NULL);
         if(dir_handle && (ent = fts_read(dir_handle)) && ent->fts_info == FTS_D) {
             h_index = allocate_handle();
-            if(h_index == -1) {
+            if(h_index == -1)
                  WRITE_STATUS(id, SSH_FX_FAILURE);
-                 break;
-             }
             handles[h_index].type = HANDLE_DIR;
             handles[h_index].data.dir = dir_handle;
              
@@ -451,10 +440,8 @@ int main(int argc, char* argv[]) {
         READ_VAR(str_length);
         READ_DATA(&h_index, ntohl(str_length)); /* TODO: Check length == sizeof(h_index) */
         
-        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_DIR) {
+        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_DIR)
             WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-            break;
-        }
           
         dir_handle = handles[h_index].data.dir;
         count = 0;
@@ -488,10 +475,8 @@ int main(int argc, char* argv[]) {
         READ_VAR(str_length);
         READ_DATA(&h_index, ntohl(str_length)); /* TODO: Check length == sizeof(h_index) */
         
-        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type == HANDLE_EMPTY) {
+        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type == HANDLE_EMPTY)
             WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-            break;
-        }
         
         if(handles[h_index].type == HANDLE_DIR)
             fts_close(handles[h_index].data.dir);
@@ -508,8 +493,8 @@ int main(int argc, char* argv[]) {
         exit(-1);
         break;      
     }
-    //fprintf(stderr, "remaining bytes: %i\n", in_length);
-    
+    /* TODO: read remaining bytes */
+    //fprintf(stderr, "remaining bytes: %i\n", in_length); 
   }
   
   return 0;
