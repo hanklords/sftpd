@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <fts.h>
 #include <pwd.h>
 #include <grp.h>
@@ -122,7 +123,6 @@
     WRITE_STR("", 0); \
     WRITE_STR("", 0); \
     WRITE(SSH_FXP_STATUS); \
-    break; \
 } while(0)
 
 #define GET_RIGHT_SYMBOL(st, r, v) ((st)->st_mode & (r) ? v : '-')
@@ -219,7 +219,7 @@ int main(int argc, char* argv[]) {
   uint8_t _msg_type;
   char _msg_data[4096];
   
-  ssize_t len_read, file_read;
+  ssize_t len_read;
   uint32_t in_length, str_length;
   uint8_t type;
   uint32_t version;
@@ -246,6 +246,7 @@ int main(int argc, char* argv[]) {
   char* ls_l_str;
   char* fxp_name_count_addr;
   char* dir_path[2] = {0};
+  char* data_buf;
   
   struct stat st;
   
@@ -308,9 +309,11 @@ int main(int argc, char* argv[]) {
               fd_flags = O_RDONLY;
           else if(pflags & SSH_FXF_WRITE)
               fd_flags = O_WRONLY;
-          else
+          else {
               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-          
+              break;
+          }
+
           if(pflags & SSH_FXF_APPEND)
               fd_flags |= O_APPEND;
           if(pflags & SSH_FXF_CREAT)
@@ -320,13 +323,18 @@ int main(int argc, char* argv[]) {
           if(pflags & SSH_FXF_EXCL)
               fd_flags |= O_EXCL;
           
-          if(((pflags & SSH_FXF_EXCL) || (pflags & SSH_FXF_TRUNC)) && !(pflags & SSH_FXF_CREAT))
+          if(((pflags & SSH_FXF_EXCL) || (pflags & SSH_FXF_TRUNC)) && !(pflags & SSH_FXF_CREAT)) {
               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+               break;
+         }
           
           if((fd = open(in_buf, fd_flags)) != -1) {
              h_index = allocate_handle();
-             if(h_index == -1)
+             if(h_index == -1) {
                  WRITE_STATUS(id, SSH_FX_FAILURE);
+                 break;
+             }
+             
              handles[h_index].type = HANDLE_FD;
              handles[h_index].data.fd = fd;
              
@@ -349,34 +357,67 @@ int main(int argc, char* argv[]) {
           READ_VAR(file_offset);
           READ_VAR(file_len);
           
-          if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD)
+          if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+              break;
+          }
           
           fd = handles[h_index].data.fd;
+          fstat(fd, &st);
+          
           file_offset = be64toh(file_offset);
-          file_len    = ntohl(file_len);
+          file_len = MIN(st.st_size - file_offset, ntohl(file_len));
           
-          if(lseek(fd, file_offset, SEEK_SET) == -1)
-              WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+          if(file_offset >= st.st_size) {
+              WRITE_STATUS(id, SSH_FX_EOF);
+              break;
+          }
           
-          file_read = read(fd, in_buf, MIN(sizeof(in_buf), file_len));
-          if(file_read == -1) {
-              if(errno == ENOENT) {
-                  WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
+          data_buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+          if(data_buf == MAP_FAILED) {
+              if(errno == EBADF) {
+                  WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+                  break;
               } else if(errno == EACCES) {
                   WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
+                  break;
               } else {
                   WRITE_STATUS(id, SSH_FX_FAILURE);
+                  break;
               }
-          } else if(file_read == 0) {
-              WRITE_STATUS(id, SSH_FX_EOF);
-          } else {
-              WRITE_VAR(id);
-              WRITE_STR(in_buf, file_read);
-              WRITE(SSH_FXP_DATA);
           }
+          
+          str_length = htonl(file_len);
+          _msg_type = SSH_FXP_DATA;
+          _msg_length_n = htonl(file_len + sizeof(id) + sizeof(str_length) + sizeof(_msg_type));
+          write(STDOUT_FILENO, &_msg_length_n, sizeof(_msg_length_n));
+          write(STDOUT_FILENO, &_msg_type, sizeof(_msg_type));
+          write(STDOUT_FILENO, &id, sizeof(id));
+          write(STDOUT_FILENO, &str_length, sizeof(str_length));
+          write(STDOUT_FILENO, data_buf + file_offset, file_len);
+          WRITE_RESET();
           break;
 
+//       case SSH_FXP_WRITE:
+//           READ_VAR(id);
+//           READ_VAR(str_length);
+//           READ_DATA(&h_index, ntohl(str_length)); /* TODO: Check length == sizeof(h_index) */
+//           READ_VAR(file_offset);
+//           READ_VAR(file_len);
+//           
+//           if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD)
+//               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+//           
+//           fd = handles[h_index].data.fd;
+//           file_offset = be64toh(file_offset);
+//           file_len    = ntohl(file_len);
+//           
+//           if(lseek(fd, file_offset, SEEK_SET) == -1)
+//               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+//           
+//           
+//           break;
+          
       case SSH_FXP_LSTAT:
         READ_VAR(id);
         READ_STRING(in_buf);
@@ -418,8 +459,10 @@ int main(int argc, char* argv[]) {
         dir_handle = fts_open(dir_path, FTS_PHYSICAL, NULL);
         if(dir_handle && (ent = fts_read(dir_handle)) && ent->fts_info == FTS_D) {
             h_index = allocate_handle();
-            if(h_index == -1)
+            if(h_index == -1) {
                  WRITE_STATUS(id, SSH_FX_FAILURE);
+                 break;
+            }
             handles[h_index].type = HANDLE_DIR;
             handles[h_index].data.dir = dir_handle;
              
@@ -440,8 +483,10 @@ int main(int argc, char* argv[]) {
         READ_VAR(str_length);
         READ_DATA(&h_index, ntohl(str_length)); /* TODO: Check length == sizeof(h_index) */
         
-        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_DIR)
+        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_DIR) {
             WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+            break;
+        }
           
         dir_handle = handles[h_index].data.dir;
         count = 0;
@@ -475,8 +520,10 @@ int main(int argc, char* argv[]) {
         READ_VAR(str_length);
         READ_DATA(&h_index, ntohl(str_length)); /* TODO: Check length == sizeof(h_index) */
         
-        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type == HANDLE_EMPTY)
+        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type == HANDLE_EMPTY) {
             WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+            break;
+        }
         
         if(handles[h_index].type == HANDLE_DIR)
             fts_close(handles[h_index].data.dir);
