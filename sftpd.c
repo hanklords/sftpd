@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
@@ -70,62 +71,30 @@
 
 #define MIN(a,b) ((a) < (b) ? a : b)
 
-#define READ_DATA(data, length) do {\
-  if((len_read = read(STDIN_FILENO, data, length)) == -1 || len_read == 0) \
+#define READ_DATA(buffer, length) do {\
+  if((len_read = read(STDIN_FILENO, buffer, length)) == -1 || (len_read == 0) || ((size_t) len_read < length)) \
     exit(-1); \
   in_length -= len_read; \
 } while(0)
 
-#define READ_VAR(data) do {\
-  READ_DATA(&data, sizeof(data)); \
-} while(0)
+#define READ_VAR(v) READ_DATA(&(v), sizeof(v))
 
-#define READ_STRING(data) do { /* TODO : Check data boundaries */ \
+#define READ_STRING_BINARY(buffer, length) do { \
   READ_VAR(str_length); \
-  READ_DATA(data, ntohl(str_length)); \
-  data[ntohl(str_length)] = '\0'; \
+  str_length = ntohl(str_length); \
+  if(str_length > length) {\
+      WRITE_STATUS(id, SSH_FX_FAILURE); \
+      exit(-1); \
+  } \
+  READ_DATA(buffer, str_length); \
 } while(0)
 
-#define WRITE_RESET() do {\
-    _msg_length_n = 0; \
+#define READ_STRING(buffer, length) do {  \
+  READ_STRING_BINARY(buffer, length - 1); \
+  buffer[str_length] = '\0'; \
 } while(0)
 
-#define WRITE_DATA(v, s) do { \
-  memcpy(_msg_data + _msg_length_n, v, s); \
-  _msg_length_n += s;    \
-} while(0)
-
-#define WRITE_VAR(v) do { \
-  WRITE_DATA(&v, sizeof(v)); \
-} while(0)
-
-#define WRITE_STR(str, l) do { \
-  str_length = htonl(l); \
-  WRITE_VAR(str_length); \
-  WRITE_DATA(str, l); \
-} while(0)
-
-#define WRITE(type) do {\
-  _msg_type = type; \
-  _msg_length = _msg_length_n; \
-  _msg_length_n += sizeof(_msg_type); \
-  _msg_length_n = htonl(_msg_length_n); \
-  write(STDOUT_FILENO, &_msg_length_n, sizeof(_msg_length_n));   \
-  write(STDOUT_FILENO, &_msg_type, sizeof(_msg_type));   \
-  write(STDOUT_FILENO, _msg_data, _msg_length);   \
-  WRITE_RESET(); \
-} while(0)
-
-#define WRITE_STATUS(id, code) do {\
-    error_code = htonl(code); \
-    WRITE_VAR(id); \
-    WRITE_VAR(error_code); \
-    WRITE_STR("", 0); \
-    WRITE_STR("", 0); \
-    WRITE(SSH_FXP_STATUS); \
-} while(0)
-
-#define GET_RIGHT_SYMBOL(st, r, v) ((st)->st_mode & (r) ? v : '-')
+#define GET_RIGHT_SYMBOL(st, r, v) ((st)->st_mode & (r) ? (v) : '-')
 
 char* ls_l(const char* name, const struct stat* st) {
     static char buf[2048];
@@ -163,31 +132,6 @@ char* ls_l(const char* name, const struct stat* st) {
     return buf;
 }
 
-#define WRITE_LS_L(name, stat) do {\
-    ls_l_str = ls_l(name, stat); \
-    WRITE_STR(ls_l_str, strlen(ls_l_str)); \
-} while(0)
-
-#define WRITE_ATTRS(st) do {\
-    attr_flags = htonl(SSH_FILEXFER_ATTR_SIZE           \
-                     | SSH_FILEXFER_ATTR_UIDGID         \
-                     | SSH_FILEXFER_ATTR_PERMISSIONS    \
-                     | SSH_FILEXFER_ATTR_ACMODTIME      \
-                );                                 \
-    attr_size = htobe64((st)->st_size);                    \
-    attr_uid = htonl((st)->st_uid);                 \
-    attr_gid = htonl((st)->st_gid);                 \
-    attr_permissions = htonl((st)->st_mode);                 \
-    attr_atime = htonl((st)->st_atim.tv_sec);                 \
-    attr_mtime = htonl((st)->st_mtim.tv_sec);                 \
-                     \
-    WRITE_VAR(attr_flags);                 \
-    WRITE_VAR(attr_size);                 \
-    WRITE_VAR(attr_uid); WRITE_VAR(attr_gid);                 \
-    WRITE_VAR(attr_permissions);                 \
-    WRITE_VAR(attr_atime); WRITE_VAR(attr_mtime);                 \
-} while(0)
-
 struct handle {
     enum {HANDLE_EMPTY, HANDLE_FD, HANDLE_DIR} type;
     union {
@@ -198,9 +142,9 @@ struct handle {
 
 #define MAX_HANDLES 1024
 struct handle handles[1024];
-int n_handles;
 
 int allocate_handle(void) {
+    static int n_handles;
     int i;
     
     if(n_handles > MAX_HANDLES / 2)
@@ -214,18 +158,98 @@ int allocate_handle(void) {
     return i;
 }
 
-int main(int argc, char* argv[]) {
-  uint32_t _msg_length_n, _msg_length;
-  uint8_t _msg_type;
-  char _msg_data[4096];
-  
+#define WRITE_STRING -1
+#define WRITE_UINT32 -2
+#define WRITE_UINT64 -3
+#define WRITE_END 0
+
+void write_msg(uint8_t type, ...) {
+    va_list ap;
+    int32_t var_length;
+    uint32_t msg_length = sizeof(type);
+   
+    /* compute message length */
+    va_start(ap, type);
+    for(var_length = va_arg(ap, size_t); var_length != WRITE_END; var_length = va_arg(ap, size_t)) {
+        switch(var_length) {
+        case WRITE_STRING:
+            msg_length += sizeof(uint32_t) + strlen(va_arg(ap, char*));
+            break;
+        case WRITE_UINT32:
+            va_arg(ap, uint32_t);
+            msg_length += sizeof(uint32_t);
+            break;
+        case WRITE_UINT64:
+            va_arg(ap, uint64_t);
+            msg_length += sizeof(uint64_t);
+            break;
+        default:
+            va_arg(ap, char*);
+            msg_length += var_length;
+            break;
+        }
+        
+    }
+    va_end(ap);
+    
+    /* message */
+    msg_length = htonl(msg_length);
+    write(STDOUT_FILENO, &msg_length, sizeof(msg_length));
+    write(STDOUT_FILENO, &type, sizeof(type));
+    va_start(ap, type);
+    for(var_length = va_arg(ap, size_t); var_length != WRITE_END; var_length = va_arg(ap, size_t)) {
+        char* write_str;
+        uint32_t write_var32;
+        uint64_t write_var64;
+        
+        switch(var_length) {
+        case WRITE_STRING:
+            write_str = va_arg(ap, char*);
+            write_var32 = htonl(strlen(write_str));
+            write(STDOUT_FILENO, &write_var32, sizeof(uint32_t));
+            write(STDOUT_FILENO, write_str, strlen(write_str));
+            break;
+        case WRITE_UINT32:
+            write_var32 = htonl(va_arg(ap, uint32_t));
+            write(STDOUT_FILENO, &write_var32, sizeof(uint32_t));
+            break;
+        case WRITE_UINT64:
+            write_var64 = htobe64(va_arg(ap, uint64_t));
+            write(STDOUT_FILENO, &write_var64, sizeof(uint64_t));
+            break;
+        default:
+            write(STDOUT_FILENO, va_arg(ap, char*), var_length);
+            break;
+        }
+    }
+    va_end(ap);
+}
+
+#define WRITE_VAR(v) sizeof(v), &(v)
+#define WRITE_DATA(size, data) WRITE_UINT32, (size), (size), (data)
+
+#define WRITE_STATUS(id, code) write_msg(SSH_FXP_STATUS, \
+    WRITE_VAR(id), \
+    WRITE_UINT32, (code), \
+    WRITE_STRING, "", \
+    WRITE_STRING, "", \
+    WRITE_END)
+
+#define WRITE_ATTRS(st) \
+    WRITE_UINT32, SSH_FILEXFER_ATTR_SIZE | SSH_FILEXFER_ATTR_UIDGID | SSH_FILEXFER_ATTR_PERMISSIONS | SSH_FILEXFER_ATTR_ACMODTIME, \
+    WRITE_UINT64, (st)->st_size,  \
+    WRITE_UINT32, (st)->st_uid, WRITE_UINT32, (st)->st_gid, \
+    WRITE_UINT32, (st)->st_mode,   \
+    WRITE_UINT32, (st)->st_atim.tv_sec,\
+    WRITE_UINT32, (st)->st_mtim.tv_sec
+
+int main(void) {
   ssize_t len_read;
   uint32_t in_length, str_length;
   uint8_t type;
   uint32_t version;
   uint32_t id;
   uint32_t pflags;
-  uint32_t count;
   
   uint64_t file_offset;
   uint32_t file_len;
@@ -239,18 +263,14 @@ int main(int argc, char* argv[]) {
   
   int h_index;
   int fd, fd_flags;
-  uint32_t error_code;
   FTS* dir_handle;
   FTSENT *ent;
-  char in_buf[sizeof(_msg_data) - 2 * sizeof(uint32_t)] = {0}, out_buf[4096] = {0};
-  char* ls_l_str;
-  char* fxp_name_count_addr;
+  char in_buf[4096] = {0}, out_buf[4096] = {0};
   char* dir_path[2] = {0};
   char* data_buf;
   
   struct stat st;
   
-  WRITE_RESET();
   while((len_read = read(0, &in_length, sizeof(in_length))) != -1 && len_read != 0) {
     in_length = ntohl(in_length);
     READ_VAR(type);
@@ -260,30 +280,30 @@ int main(int argc, char* argv[]) {
       case SSH_FXP_INIT:
         READ_VAR(version);
         
-        version = htonl(3);
-        WRITE_VAR(version);
-        WRITE(SSH_FXP_VERSION);
+        write_msg(SSH_FXP_VERSION,
+            WRITE_UINT32, 3,
+            WRITE_END
+        );
         break;
         
       case SSH_FXP_REALPATH:
         READ_VAR(id);
-        READ_STRING(in_buf);
+        READ_STRING(in_buf, sizeof(in_buf));
         
         realpath(in_buf, out_buf);
-        count = htonl(1);
         attr_flags = 0;
         
-        WRITE_VAR(id);
-        WRITE_VAR(count);
-        WRITE_STR(out_buf, strlen(out_buf));
-        WRITE_STR(out_buf, strlen(out_buf));
-        WRITE_VAR(attr_flags);
-        WRITE(SSH_FXP_NAME);
+        write_msg(SSH_FXP_NAME,
+            WRITE_VAR(id),
+            WRITE_UINT32, 1,
+            WRITE_STRING, out_buf, WRITE_STRING, "", WRITE_VAR(attr_flags),
+            WRITE_END
+        );
         break;
         
       case SSH_FXP_OPEN:
           READ_VAR(id);
-          READ_STRING(in_buf);
+          READ_STRING(in_buf, sizeof(in_buf));
           READ_VAR(pflags);
           READ_VAR(attr_flags);
           
@@ -324,9 +344,9 @@ int main(int argc, char* argv[]) {
               fd_flags |= O_EXCL;
           
           if(((pflags & SSH_FXF_EXCL) || (pflags & SSH_FXF_TRUNC)) && !(pflags & SSH_FXF_CREAT)) {
-              WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
                break;
-         }
+          }
           
           if((fd = open(in_buf, fd_flags)) != -1) {
              h_index = allocate_handle();
@@ -338,9 +358,11 @@ int main(int argc, char* argv[]) {
              handles[h_index].type = HANDLE_FD;
              handles[h_index].data.fd = fd;
              
-             WRITE_VAR(id);
-             WRITE_STR(&h_index, sizeof(h_index));
-             WRITE(SSH_FXP_HANDLE);
+             write_msg(SSH_FXP_HANDLE,
+                 WRITE_VAR(id),
+                 WRITE_DATA(sizeof(h_index), &h_index),
+                 WRITE_END
+             );
           } else if(errno == ENOENT) {
               WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
           } else if(errno == EACCES) {
@@ -352,8 +374,7 @@ int main(int argc, char* argv[]) {
           
       case SSH_FXP_READ:
           READ_VAR(id);
-          READ_VAR(str_length);
-          READ_DATA(&h_index, ntohl(str_length)); /* TODO: Check length == sizeof(h_index) */
+          READ_STRING_BINARY(&h_index, sizeof(h_index));
           READ_VAR(file_offset);
           READ_VAR(file_len);
           
@@ -368,7 +389,7 @@ int main(int argc, char* argv[]) {
           file_offset = be64toh(file_offset);
           file_len = MIN(st.st_size - file_offset, ntohl(file_len));
           
-          if(file_offset >= st.st_size) {
+          if(file_offset >= (uint64_t) st.st_size) {
               WRITE_STATUS(id, SSH_FX_EOF);
               break;
           }
@@ -387,15 +408,11 @@ int main(int argc, char* argv[]) {
               }
           }
           
-          str_length = htonl(file_len);
-          _msg_type = SSH_FXP_DATA;
-          _msg_length_n = htonl(file_len + sizeof(id) + sizeof(str_length) + sizeof(_msg_type));
-          write(STDOUT_FILENO, &_msg_length_n, sizeof(_msg_length_n));
-          write(STDOUT_FILENO, &_msg_type, sizeof(_msg_type));
-          write(STDOUT_FILENO, &id, sizeof(id));
-          write(STDOUT_FILENO, &str_length, sizeof(str_length));
-          write(STDOUT_FILENO, data_buf + file_offset, file_len);
-          WRITE_RESET();
+          write_msg(SSH_FXP_DATA,
+              WRITE_VAR(id),
+              WRITE_DATA(file_len, data_buf + file_offset),
+              WRITE_END
+          );
           break;
 
 //       case SSH_FXP_WRITE:
@@ -420,12 +437,14 @@ int main(int argc, char* argv[]) {
           
       case SSH_FXP_LSTAT:
         READ_VAR(id);
-        READ_STRING(in_buf);
+        READ_STRING(in_buf, sizeof(in_buf));
 
         if(lstat(in_buf, &st) != -1) {
-            WRITE_VAR(id);
-            WRITE_ATTRS(&st);
-            WRITE(SSH_FXP_ATTRS);
+            write_msg(SSH_FXP_ATTRS,
+                WRITE_VAR(id),
+                WRITE_ATTRS(&st),
+                WRITE_END
+            );
         } else if(errno == ENOENT) {
             WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
         } else if(errno == EACCES) {
@@ -437,12 +456,14 @@ int main(int argc, char* argv[]) {
         
       case SSH_FXP_STAT:
         READ_VAR(id);
-        READ_STRING(in_buf);
+        READ_STRING(in_buf, sizeof(in_buf));
 
         if(stat(in_buf, &st) != -1) {
-            WRITE_VAR(id);
-            WRITE_ATTRS(&st);
-            WRITE(SSH_FXP_ATTRS);
+            write_msg(SSH_FXP_ATTRS,
+                WRITE_VAR(id),
+                WRITE_ATTRS(&st),
+                WRITE_END
+            );
         } else if(errno == ENOENT) {
             WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
         } else if(errno == EACCES) {
@@ -454,7 +475,8 @@ int main(int argc, char* argv[]) {
     
       case SSH_FXP_OPENDIR:
         READ_VAR(id);
-        READ_STRING(in_buf);
+        READ_STRING(in_buf, sizeof(in_buf));
+        
         dir_path[0] = in_buf;
         dir_handle = fts_open(dir_path, FTS_PHYSICAL, NULL);
         if(dir_handle && (ent = fts_read(dir_handle)) && ent->fts_info == FTS_D) {
@@ -465,10 +487,12 @@ int main(int argc, char* argv[]) {
             }
             handles[h_index].type = HANDLE_DIR;
             handles[h_index].data.dir = dir_handle;
-             
-            WRITE_VAR(id);
-            WRITE_STR(&h_index, sizeof(h_index));
-            WRITE(SSH_FXP_HANDLE);
+            
+            write_msg(SSH_FXP_HANDLE,
+                WRITE_VAR(id),
+                WRITE_DATA(sizeof(h_index), &h_index),
+                WRITE_END
+            );
         } else if(errno == ENOENT) {
             WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
         } else if(errno == EACCES) {
@@ -480,8 +504,7 @@ int main(int argc, char* argv[]) {
         
       case SSH_FXP_READDIR:
         READ_VAR(id);
-        READ_VAR(str_length);
-        READ_DATA(&h_index, ntohl(str_length)); /* TODO: Check length == sizeof(h_index) */
+        READ_STRING_BINARY(&h_index, sizeof(h_index));
         
         if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_DIR) {
             WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
@@ -489,36 +512,27 @@ int main(int argc, char* argv[]) {
         }
           
         dir_handle = handles[h_index].data.dir;
-        count = 0;
-        WRITE_VAR(id);
-        fxp_name_count_addr = _msg_data + _msg_length_n;
-        WRITE_VAR(count);
-        while((ent = fts_read(dir_handle))) {
+        while((ent = fts_read(dir_handle)) && ent->fts_info == FTS_DP);
+        if(ent) {
             if(ent->fts_info == FTS_D)
               fts_set(dir_handle, ent, FTS_SKIP);
-            if(ent->fts_info == FTS_DP)
-              continue;
             
-            count++;
-            WRITE_STR(ent->fts_name, ent->fts_namelen);
-            WRITE_LS_L(ent->fts_name, ent->fts_statp); /* TODO: check it is valid */
-            WRITE_ATTRS(ent->fts_statp);
-        }
-        
-        if(count > 0) {
-            count = htonl(count);
-            memcpy(fxp_name_count_addr, &count, sizeof(count));
-            WRITE(SSH_FXP_NAME);
+            write_msg(SSH_FXP_NAME,
+                WRITE_VAR(id),
+                WRITE_UINT32, 1,
+                WRITE_DATA(ent->fts_namelen, ent->fts_name),
+                WRITE_STRING, ls_l(ent->fts_name, ent->fts_statp), /* TODO: check it is valid */
+                WRITE_ATTRS(ent->fts_statp),
+                WRITE_END
+            );
         } else {
-            WRITE_RESET();
             WRITE_STATUS(id, SSH_FX_EOF);
         }
         break;
         
       case SSH_FXP_CLOSE:
         READ_VAR(id);
-        READ_VAR(str_length);
-        READ_DATA(&h_index, ntohl(str_length)); /* TODO: Check length == sizeof(h_index) */
+        READ_STRING_BINARY(&h_index, sizeof(h_index));
         
         if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type == HANDLE_EMPTY) {
             WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
