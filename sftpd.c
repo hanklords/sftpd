@@ -463,6 +463,31 @@ int main(void) {
           munmap(data_buf, file_len);
           break;
           
+    case SSH_FXP_FSTAT:
+        READ_VAR(id);
+        READ_STRING_BINARY(&h_index, sizeof(h_index));
+        
+        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+            WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+            break;
+        }
+        fd = handles[h_index].data.fd;
+
+        if(fstat(fd, &st) != -1) {
+            write_msg(SSH_FXP_ATTRS,
+                WRITE_VAR(id),
+                WRITE_ATTRS(&st),
+                WRITE_END
+            );
+        } else if(errno == ENOENT) {
+            WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
+        } else if(errno == EACCES) {
+            WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
+        } else {
+            WRITE_STATUS(id, SSH_FX_FAILURE);
+        }
+        break;
+        
       case SSH_FXP_LSTAT:
         READ_VAR(id);
         READ_STRING(in_buf, sizeof(in_buf));
