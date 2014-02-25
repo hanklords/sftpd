@@ -463,6 +463,31 @@ int main(void) {
           munmap(data_buf, file_len);
           break;
           
+    case SSH_FXP_REMOVE:
+        READ_VAR(id);
+        READ_STRING(in_buf, sizeof(in_buf));
+        
+        if(unlink(in_buf) == -1) {
+            switch(errno) {
+                case ENAMETOOLONG:
+            case ENOENT:
+            case ENOTDIR:
+                WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+                break;
+            case EACCES:
+            case EPERM:
+            case EROFS:
+                WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
+                break;
+            default:
+                WRITE_STATUS(id, SSH_FX_FAILURE);
+                break;
+            }
+        } else {
+            WRITE_STATUS(id, SSH_FX_OK);
+        }
+        break;
+          
     case SSH_FXP_FSTAT:
         READ_VAR(id);
         READ_STRING_BINARY(&h_index, sizeof(h_index));
