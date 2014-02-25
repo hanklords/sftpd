@@ -9,11 +9,19 @@
 #include <fcntl.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <fts.h>
 #include <pwd.h>
 #include <grp.h>
+
+#ifndef TIMESPEC_TO_TIMEVAL
+#define TIMESPEC_TO_TIMEVAL(tv, ts) {                   \
+    (tv)->tv_sec = (ts)->tv_sec;                    \
+    (tv)->tv_usec = (ts)->tv_nsec / 1000;               \
+}
+#endif
 
 
 #define SSH_FXP_INIT                1
@@ -101,6 +109,35 @@
 #define READ_STRING(buffer, length) do {  \
   READ_STRING_BINARY(buffer, length - 1); \
   buffer[str_length] = '\0'; \
+} while(0)
+
+#define READ_ATTR(st) do { \
+    memset(st, 0, sizeof(*(st))); \
+    READ_UINT32(attr_flags); \
+    if(attr_flags & SSH_FILEXFER_ATTR_SIZE) {\
+        READ_VAR(attr_size); \
+        (st)->st_size = attr_size; \
+    } \
+    if(attr_flags & SSH_FILEXFER_ATTR_UIDGID) {\
+        READ_VAR(attr_uid); \
+        (st)->st_uid = attr_uid; \
+    } \
+    if(attr_flags & SSH_FILEXFER_ATTR_UIDGID) {\
+        READ_VAR(attr_gid); \
+        (st)->st_gid = attr_gid; \
+    } \
+    if(attr_flags &SSH_FILEXFER_ATTR_PERMISSIONS) {\
+        READ_VAR(attr_permissions); \
+        (st)->st_mode = attr_permissions; \
+    } \
+    if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {\
+        READ_VAR(attr_atime); \
+        (st)->st_atim.tv_sec = attr_atime; \
+    } \
+    if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {\
+        READ_VAR(attr_mtime); \
+        (st)->st_mtim.tv_sec = attr_mtime; \
+    } \
 } while(0)
 
 #define GET_RIGHT_SYMBOL(st, r, v) ((st)->st_mode & (r) ? (v) : '-')
@@ -269,6 +306,7 @@ int main(void) {
   uint32_t attr_uid, attr_gid;
   uint32_t attr_permissions;
   uint32_t attr_atime, attr_mtime;
+  struct timeval amtimes[2];
   
   int h_index;
   int fd, fd_flags;
@@ -313,23 +351,8 @@ int main(void) {
       case SSH_FXP_OPEN:
           READ_VAR(id);
           READ_STRING(in_buf, sizeof(in_buf));
-          READ_VAR(pflags);
-          READ_VAR(attr_flags);
-          
-          pflags = ntohl(pflags);
-          attr_flags = ntohl(attr_flags);
-          if(attr_flags & SSH_FILEXFER_ATTR_SIZE)
-              READ_VAR(attr_size);
-          if(attr_flags & SSH_FILEXFER_ATTR_UIDGID)
-              READ_VAR(attr_uid);
-          if(attr_flags & SSH_FILEXFER_ATTR_UIDGID)
-              READ_VAR(attr_gid);
-          if(attr_flags &SSH_FILEXFER_ATTR_PERMISSIONS)
-              READ_VAR(attr_permissions);
-          if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME)
-              READ_VAR(attr_atime);
-          if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME)
-              READ_VAR(attr_mtime);
+          READ_UINT32(pflags);
+          READ_ATTR(&st);
           
           /* Check fxp_open attributes */
           if(pflags & SSH_FXF_READ & SSH_FXF_WRITE)
@@ -357,6 +380,7 @@ int main(void) {
                break;
           }
           
+          /* TODO: set the right attrs */
           if(pflags & SSH_FXF_CREAT) {
               fd = open(in_buf, fd_flags, 0644);
           } else {
@@ -442,8 +466,7 @@ int main(void) {
           READ_UINT64(file_offset);
           READ_UINT32(file_len);
           
-          lseek(fd, file_offset + file_len - 1, SEEK_SET);
-          write(fd, "", 1);
+          ftruncate(fd, file_offset + file_len);
           data_buf = mmap(NULL, file_len, PROT_WRITE, MAP_SHARED, fd, file_offset);
           if(data_buf == MAP_FAILED) {
               if(errno == EBADF) {
@@ -514,6 +537,54 @@ int main(void) {
         }
         break;
         
+    case SSH_FXP_SETSTAT: /* TODO: return errors */
+        READ_VAR(id);
+        READ_STRING(in_buf, sizeof(in_buf));
+        READ_ATTR(&st);
+
+        if(attr_flags & SSH_FILEXFER_ATTR_SIZE) {
+            truncate(in_buf, st.st_size);
+        }
+        if(attr_flags & SSH_FILEXFER_ATTR_UIDGID) {
+            chown(in_buf, st.st_uid, st.st_gid);
+        }
+        if(attr_flags &SSH_FILEXFER_ATTR_PERMISSIONS) {
+            chmod(in_buf, st.st_mode);
+        }
+        if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {
+            TIMESPEC_TO_TIMEVAL(&amtimes[0], &st.st_atim);
+            TIMESPEC_TO_TIMEVAL(&amtimes[1], &st.st_mtim);
+            utimes(in_buf, amtimes);
+        }
+        break;
+        
+    case SSH_FXP_FSETSTAT: /* TODO: return errors */
+        READ_VAR(id);
+        READ_STRING_BINARY(&h_index, sizeof(h_index));
+        
+        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+            WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+            break;
+        }
+        fd = handles[h_index].data.fd;
+        READ_ATTR(&st);
+
+        if(attr_flags & SSH_FILEXFER_ATTR_SIZE) {
+            ftruncate(fd, st.st_size);
+        }
+        if(attr_flags & SSH_FILEXFER_ATTR_UIDGID) {
+            fchown(fd, st.st_uid, st.st_gid);
+        }
+        if(attr_flags &SSH_FILEXFER_ATTR_PERMISSIONS) {
+            fchmod(fd, st.st_mode);
+        }
+        if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {
+            TIMESPEC_TO_TIMEVAL(&amtimes[0], &st.st_atim);
+            TIMESPEC_TO_TIMEVAL(&amtimes[1], &st.st_mtim);
+            futimes(fd, amtimes);
+        }
+        break;
+        
     case SSH_FXP_FSTAT:
         READ_VAR(id);
         READ_STRING_BINARY(&h_index, sizeof(h_index));
@@ -576,7 +647,34 @@ int main(void) {
             WRITE_STATUS(id, SSH_FX_FAILURE);
         }
         break;
-    
+        
+    case SSH_FXP_MKDIR:
+        READ_VAR(id);
+        READ_STRING(in_buf, sizeof(in_buf));
+        READ_ATTR(&st);
+        
+        if(mkdir(in_buf, st.st_mode) == -1) {
+            switch(errno) {
+            case ENOTDIR:
+            case ENAMETOOLONG:
+            case ENOENT:
+                WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+                break;
+            case EDQUOT:
+            case EACCES:
+            case EPERM:
+            case EROFS:
+                WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
+                break;
+            default:
+                WRITE_STATUS(id, SSH_FX_FAILURE);
+                break;
+            }
+        } else {
+            WRITE_STATUS(id, SSH_FX_OK);
+        }
+        break;
+
       case SSH_FXP_OPENDIR:
         READ_VAR(id);
         READ_STRING(in_buf, sizeof(in_buf));
