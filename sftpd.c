@@ -78,6 +78,15 @@
 } while(0)
 
 #define READ_VAR(v) READ_DATA(&(v), sizeof(v))
+#define READ_UINT32(v) do {\
+    READ_DATA(&(v), sizeof(uint32_t)); \
+    v = ntohl(v); \
+} while(0)
+
+#define READ_UINT64(v) do {\
+    READ_DATA(&(v), sizeof(uint64_t)); \
+    v = be64toh(v); \
+} while(0)
 
 #define READ_STRING_BINARY(buffer, length) do { \
   READ_VAR(str_length); \
@@ -328,7 +337,7 @@ int main(void) {
           else if(pflags & SSH_FXF_READ)
               fd_flags = O_RDONLY;
           else if(pflags & SSH_FXF_WRITE)
-              fd_flags = O_WRONLY;
+              fd_flags = O_RDWR;
           else {
               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
               break;
@@ -348,7 +357,13 @@ int main(void) {
                break;
           }
           
-          if((fd = open(in_buf, fd_flags)) != -1) {
+          if(pflags & SSH_FXF_CREAT) {
+              fd = open(in_buf, fd_flags, 0644);
+          } else {
+              fd = open(in_buf, fd_flags);
+          }
+          
+          if(fd != -1) {
              h_index = allocate_handle();
              if(h_index == -1) {
                  WRITE_STATUS(id, SSH_FX_FAILURE);
@@ -375,8 +390,8 @@ int main(void) {
       case SSH_FXP_READ:
           READ_VAR(id);
           READ_STRING_BINARY(&h_index, sizeof(h_index));
-          READ_VAR(file_offset);
-          READ_VAR(file_len);
+          READ_UINT64(file_offset);
+          READ_UINT32(file_len);
           
           if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
@@ -386,15 +401,13 @@ int main(void) {
           fd = handles[h_index].data.fd;
           fstat(fd, &st);
           
-          file_offset = be64toh(file_offset);
-          file_len = MIN(st.st_size - file_offset, ntohl(file_len));
-          
+          file_len = MIN(st.st_size - file_offset, file_len);
           if(file_offset >= (uint64_t) st.st_size) {
               WRITE_STATUS(id, SSH_FX_EOF);
               break;
           }
           
-          data_buf = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+          data_buf = mmap(NULL, file_len, PROT_READ, MAP_SHARED, fd, file_offset);
           if(data_buf == MAP_FAILED) {
               if(errno == EBADF) {
                   WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
@@ -410,30 +423,45 @@ int main(void) {
           
           write_msg(SSH_FXP_DATA,
               WRITE_VAR(id),
-              WRITE_DATA(file_len, data_buf + file_offset),
+              WRITE_DATA(file_len, data_buf),
               WRITE_END
           );
+          munmap(data_buf, file_len);
           break;
 
-//       case SSH_FXP_WRITE:
-//           READ_VAR(id);
-//           READ_VAR(str_length);
-//           READ_DATA(&h_index, ntohl(str_length)); /* TODO: Check length == sizeof(h_index) */
-//           READ_VAR(file_offset);
-//           READ_VAR(file_len);
-//           
-//           if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD)
-//               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-//           
-//           fd = handles[h_index].data.fd;
-//           file_offset = be64toh(file_offset);
-//           file_len    = ntohl(file_len);
-//           
-//           if(lseek(fd, file_offset, SEEK_SET) == -1)
-//               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-//           
-//           
-//           break;
+      case SSH_FXP_WRITE:
+          READ_VAR(id);
+          READ_STRING_BINARY(&h_index, sizeof(h_index));
+        
+          if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+              WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+              break;
+          }
+          fd = handles[h_index].data.fd;
+
+          READ_UINT64(file_offset);
+          READ_UINT32(file_len);
+          
+          lseek(fd, file_offset + file_len - 1, SEEK_SET);
+          write(fd, "", 1);
+          data_buf = mmap(NULL, file_len, PROT_WRITE, MAP_SHARED, fd, file_offset);
+          if(data_buf == MAP_FAILED) {
+              if(errno == EBADF) {
+                  WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+                  break;
+              } else if(errno == EACCES) {
+                  WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
+                  break;
+              } else {
+                  WRITE_STATUS(id, SSH_FX_FAILURE);
+                  break;
+              }
+          }
+          
+          READ_DATA(data_buf, file_len);
+          WRITE_STATUS(id, SSH_FX_OK);
+          munmap(data_buf, file_len);
+          break;
           
       case SSH_FXP_LSTAT:
         READ_VAR(id);
@@ -555,6 +583,8 @@ int main(void) {
         break;      
     }
     /* TODO: read remaining bytes */
+    while(in_length > 0)
+        READ_DATA(in_buf, MIN(sizeof(in_buf), in_length));
     //fprintf(stderr, "remaining bytes: %i\n", in_length); 
   }
   
