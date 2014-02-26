@@ -727,7 +727,7 @@ int main(void) {
         
       default: /* Unknown command */
         fprintf(stderr, "Unknown command: %i\n", type);
-        exit(-1);
+        WRITE_STATUS(id, SSH_FX_OP_UNSUPPORTED);
         break;      
     }
 
