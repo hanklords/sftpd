@@ -97,8 +97,7 @@
 } while(0)
 
 #define READ_STRING_BINARY(buffer, length) do { \
-  READ_VAR(str_length); \
-  str_length = ntohl(str_length); \
+  READ_UINT32(str_length);  \
   if(str_length > length) {\
       WRITE_STATUS(id, SSH_FX_FAILURE); \
       exit(-1); \
