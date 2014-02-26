@@ -730,10 +730,9 @@ int main(void) {
         exit(-1);
         break;      
     }
-    /* TODO: read remaining bytes */
+
     while(in_length > 0)
         READ_DATA(in_buf, MIN(sizeof(in_buf), in_length));
-    //fprintf(stderr, "remaining bytes: %i\n", in_length); 
   }
   
   return 0;
