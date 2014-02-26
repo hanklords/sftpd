@@ -367,7 +367,6 @@ int main(void) {
     in_length = ntohl(in_length);
     READ_VAR(type);
     
-    fprintf(stderr, "type: %i\n", type);
     switch(type) {
       case SSH_FXP_INIT:
         READ_VAR(version);
