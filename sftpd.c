@@ -79,65 +79,119 @@
 
 #define MIN(a,b) ((a) < (b) ? a : b)
 
-#define READ_DATA(buffer, length) do {\
-  if((len_read = read(STDIN_FILENO, buffer, length)) == -1 || (len_read == 0) || ((size_t) len_read < length)) \
-    exit(-1); \
-  in_length -= len_read; \
-} while(0)
+#define READ_MSG_LENGTH -1
 
-#define READ_VAR(v) READ_DATA(&(v), sizeof(v))
-#define READ_UINT32(v) do {\
-    READ_DATA(&(v), sizeof(uint32_t)); \
-    v = ntohl(v); \
-} while(0)
+ssize_t read_msg(ssize_t size, void* data);
 
-#define READ_UINT64(v) do {\
-    READ_DATA(&(v), sizeof(uint64_t)); \
-    v = be64toh(v); \
-} while(0)
+ssize_t read_msg_length(void) {
+    return read_msg(READ_MSG_LENGTH, NULL);
+}
 
-#define READ_STRING_BINARY(buffer, length) do { \
-  READ_UINT32(str_length);  \
-  if(str_length > length) {\
-      WRITE_STATUS(id, SSH_FX_FAILURE); \
-      exit(-1); \
-  } \
-  READ_DATA(buffer, str_length); \
-} while(0)
+#define read_uint8(v) read_msg(sizeof(uint8_t), (v))
 
-#define READ_STRING(buffer, length) do {  \
-  READ_STRING_BINARY(buffer, length - 1); \
-  buffer[str_length] = '\0'; \
-} while(0)
+ssize_t read_uint32(uint32_t* data) {
+    ssize_t r;
+    
+    r = read_msg(sizeof(uint32_t), data);
+    if(r != -1)
+        *data = ntohl(*data);
+    
+    return r;
+}
 
-#define READ_ATTR(st) do { \
-    memset(st, 0, sizeof(*(st))); \
-    READ_UINT32(attr_flags); \
-    if(attr_flags & SSH_FILEXFER_ATTR_SIZE) {\
-        READ_VAR(attr_size); \
-        (st)->st_size = attr_size; \
-    } \
-    if(attr_flags & SSH_FILEXFER_ATTR_UIDGID) {\
-        READ_VAR(attr_uid); \
-        (st)->st_uid = attr_uid; \
-    } \
-    if(attr_flags & SSH_FILEXFER_ATTR_UIDGID) {\
-        READ_VAR(attr_gid); \
-        (st)->st_gid = attr_gid; \
-    } \
-    if(attr_flags &SSH_FILEXFER_ATTR_PERMISSIONS) {\
-        READ_VAR(attr_permissions); \
-        (st)->st_mode = attr_permissions; \
-    } \
-    if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {\
-        READ_VAR(attr_atime); \
-        (st)->st_atim.tv_sec = attr_atime; \
-    } \
-    if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {\
-        READ_VAR(attr_mtime); \
-        (st)->st_mtim.tv_sec = attr_mtime; \
-    } \
-} while(0)
+ssize_t read_uint64(uint64_t* data) {
+    ssize_t r;
+    
+    r = read_msg(sizeof(uint64_t), data);
+    if(r != -1)
+        *data = be64toh(*data);
+    
+    return r;
+}
+
+ssize_t read_data(ssize_t size, void* data) {
+    ssize_t r;
+    uint32_t data_length;
+    
+    if((r = read_uint32(&data_length)) == -1)
+        return r;
+    
+    if(data_length > size)
+        return -1;
+
+    if((r = read_msg(data_length, data)) == -1)
+        return r;
+    
+    return r;
+}
+
+ssize_t read_string(ssize_t size, char* data) {
+    ssize_t r;
+    
+    if((r = read_data(size - 1, data)) == -1)
+        return r;
+    
+    data[r + 1] = '\0';
+    return r;
+}
+
+ssize_t read_attr(uint32_t *attr_flags, struct stat* st) { /* TODO: check errors */
+    ssize_t r;
+    uint64_t attr_size;
+    uint32_t attr_uid, attr_gid;
+    uint32_t attr_permissions;
+    uint32_t attr_atime, attr_mtime;
+  
+    if((r = read_uint32(attr_flags)) == -1)
+        return r;
+    
+    memset(st, 0, sizeof(*st));
+
+    if(*attr_flags & SSH_FILEXFER_ATTR_SIZE) {
+        read_uint64(&attr_size);
+        st->st_size = attr_size;
+    }
+    if(*attr_flags & SSH_FILEXFER_ATTR_UIDGID) {
+        read_uint32(&attr_uid);
+        st->st_uid = attr_uid;
+    }
+    if(*attr_flags & SSH_FILEXFER_ATTR_UIDGID) {\
+        read_uint32(&attr_gid);
+        st->st_gid = attr_gid;
+    }
+    if(*attr_flags &SSH_FILEXFER_ATTR_PERMISSIONS) {\
+        read_uint32(&attr_permissions);
+        st->st_mode = attr_permissions;
+    }
+    if(*attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {\
+        read_uint32(&attr_atime);
+        st->st_atim.tv_sec = attr_atime;
+    }
+    if(*attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {\
+        read_uint32(&attr_mtime);
+        st->st_mtim.tv_sec = attr_mtime;
+    }
+    
+    return r;
+}
+
+ssize_t read_msg(ssize_t size, void* data) {
+    static uint32_t length;
+    ssize_t len;
+   
+    if(size == READ_MSG_LENGTH) {
+        length = sizeof(length); /* reset length to a big enough size to read itself */
+        return read_uint32(&length);
+    } else {
+        len = read(STDIN_FILENO, data, size); /* TODO: check unread size */
+        if(len != -1)
+            length -= len;
+        if(len == -1 || len == 0 || len < size)
+            return -1;
+    }
+    
+    return len;
+}
 
 int fsetstat(int fd, uint32_t attr_flags, struct stat* st) {
     int ret;
@@ -301,7 +355,7 @@ void write_msg(uint8_t type, ...) {
 #define WRITE_DATA(size, data) WRITE_UINT32, (size), (size), (data)
 
 #define WRITE_STATUS(id, code) write_msg(SSH_FXP_STATUS, \
-    WRITE_VAR(id), \
+    WRITE_UINT32, id, \
     WRITE_UINT32, (code), \
     WRITE_STRING, "", \
     WRITE_STRING, "", \
@@ -339,8 +393,6 @@ void write_error(uint32_t id, int error) {
     WRITE_UINT32, (st)->st_mtim.tv_sec
 
 int main(void) {
-  ssize_t len_read;
-  uint32_t in_length, str_length;
   uint8_t type;
   uint32_t version;
   uint32_t id;
@@ -349,12 +401,8 @@ int main(void) {
   uint64_t file_offset;
   uint32_t file_len;
 
-  /* attr */
   uint32_t attr_flags;
-  uint64_t attr_size;
-  uint32_t attr_uid, attr_gid;
-  uint32_t attr_permissions;
-  uint32_t attr_atime, attr_mtime;
+  
   
   int h_index;
   int fd, fd_flags;
@@ -366,13 +414,12 @@ int main(void) {
   
   struct stat st;
   
-  while((len_read = read(0, &in_length, sizeof(in_length))) != -1 && len_read != 0) {
-    in_length = ntohl(in_length);
-    READ_VAR(type);
+  while(read_msg_length() != -1) {
+    read_uint8(&type);
     
     switch(type) {
       case SSH_FXP_INIT:
-        READ_VAR(version);
+        read_uint32(&version);
         
         write_msg(SSH_FXP_VERSION,
             WRITE_UINT32, 3,
@@ -381,25 +428,27 @@ int main(void) {
         break;
         
       case SSH_FXP_REALPATH:
-        READ_VAR(id);
-        READ_STRING(in_buf, sizeof(in_buf));
+        read_uint32(&id);
+        read_string(sizeof(in_buf), in_buf);
         
         realpath(in_buf, out_buf);
         attr_flags = 0;
         
         write_msg(SSH_FXP_NAME,
-            WRITE_VAR(id),
+            WRITE_UINT32, id,
             WRITE_UINT32, 1,
-            WRITE_STRING, out_buf, WRITE_STRING, "", WRITE_VAR(attr_flags),
+            WRITE_STRING, out_buf,
+            WRITE_STRING, "",
+            WRITE_UINT32, attr_flags,
             WRITE_END
         );
         break;
         
       case SSH_FXP_OPEN:
-          READ_VAR(id);
-          READ_STRING(in_buf, sizeof(in_buf));
-          READ_UINT32(pflags);
-          READ_ATTR(&st);
+          read_uint32(&id);
+          read_string(sizeof(in_buf), in_buf);
+          read_uint32(&pflags);
+          read_attr(&attr_flags, &st);
           
           /* Check fxp_open attributes */
           if(pflags & SSH_FXF_READ & SSH_FXF_WRITE)
@@ -447,7 +496,7 @@ int main(void) {
              handles[h_index].data.fd = fd;
              
              write_msg(SSH_FXP_HANDLE,
-                 WRITE_VAR(id),
+                 WRITE_UINT32, id,
                  WRITE_DATA(sizeof(h_index), &h_index),
                  WRITE_END
              );
@@ -455,11 +504,11 @@ int main(void) {
           break;
           
       case SSH_FXP_READ:
-          READ_VAR(id);
-          READ_STRING_BINARY(&h_index, sizeof(h_index));
-          READ_UINT64(file_offset);
-          READ_UINT32(file_len);
-          
+          read_uint32(&id);
+          read_data(sizeof(h_index), &h_index);
+          read_uint64(&file_offset);
+          read_uint32(&file_len);
+
           if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
               break;
@@ -479,7 +528,7 @@ int main(void) {
               write_error(id, errno);
           } else {
               write_msg(SSH_FXP_DATA,
-                  WRITE_VAR(id),
+                  WRITE_UINT32, id,
                   WRITE_DATA(file_len, data_buf),
                   WRITE_END
               );
@@ -488,32 +537,32 @@ int main(void) {
           break;
 
       case SSH_FXP_WRITE:
-          READ_VAR(id);
-          READ_STRING_BINARY(&h_index, sizeof(h_index));
+          read_uint32(&id);
+          read_data(sizeof(h_index), &h_index);
         
           if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
               break;
           }
           fd = handles[h_index].data.fd;
-
-          READ_UINT64(file_offset);
-          READ_UINT32(file_len);
+          
+          read_uint64(&file_offset);
+          read_uint32(&file_len);
           
           ftruncate(fd, file_offset + file_len);
           data_buf = mmap(NULL, file_len, PROT_WRITE, MAP_SHARED, fd, file_offset);
           if(data_buf == MAP_FAILED) {
               write_error(id, errno);
           } else {
-              READ_DATA(data_buf, file_len);
+              read_msg(file_len, data_buf);
               WRITE_STATUS(id, SSH_FX_OK);
               munmap(data_buf, file_len);
           }
           break;
           
     case SSH_FXP_REMOVE:
-        READ_VAR(id);
-        READ_STRING(in_buf, sizeof(in_buf));
+        read_uint32(&id);
+        read_string(sizeof(in_buf), in_buf);
         
         if(unlink(in_buf) == -1) {
             write_error(id, errno);
@@ -523,8 +572,8 @@ int main(void) {
         break;
         
     case SSH_FXP_RMDIR:
-        READ_VAR(id);
-        READ_STRING(in_buf, sizeof(in_buf));
+        read_uint32(&id);
+        read_string(sizeof(in_buf), in_buf);
         
         if(rmdir(in_buf) == -1) {
             write_error(id, errno);
@@ -534,9 +583,9 @@ int main(void) {
         break;
         
     case SSH_FXP_SETSTAT: /* TODO: return errors */
-        READ_VAR(id);
-        READ_STRING(in_buf, sizeof(in_buf));
-        READ_ATTR(&st);
+        read_uint32(&id);
+        read_string(sizeof(in_buf), in_buf);
+        read_attr(&attr_flags, &st);
         
         if((fd = open(in_buf, O_WRONLY)) == -1) {
             write_error(id, errno);
@@ -555,16 +604,16 @@ int main(void) {
         break;
         
     case SSH_FXP_FSETSTAT: /* TODO: return errors */
-        READ_VAR(id);
-        READ_STRING_BINARY(&h_index, sizeof(h_index));
+        read_uint32(&id);
+        read_data(sizeof(h_index), &h_index);
         
         if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
             WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
             break;
         }
         fd = handles[h_index].data.fd;
-        READ_ATTR(&st);
-        
+        read_attr(&attr_flags, &st);
+
         if(fsetstat(fd, attr_flags, &st) == -1) {
             write_error(id, errno);
         } else {
@@ -573,8 +622,8 @@ int main(void) {
         break;
         
     case SSH_FXP_FSTAT:
-        READ_VAR(id);
-        READ_STRING_BINARY(&h_index, sizeof(h_index));
+        read_uint32(&id);
+        read_data(sizeof(h_index), &h_index);
         
         if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
             WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
@@ -585,7 +634,7 @@ int main(void) {
             write_error(id, errno);
         } else {
             write_msg(SSH_FXP_ATTRS,
-                WRITE_VAR(id),
+                WRITE_UINT32, id,
                 WRITE_ATTRS(&st),
                 WRITE_END
             );
@@ -593,14 +642,14 @@ int main(void) {
         break;
         
       case SSH_FXP_LSTAT:
-        READ_VAR(id);
-        READ_STRING(in_buf, sizeof(in_buf));
+        read_uint32(&id);
+        read_string(sizeof(in_buf), in_buf);
 
         if(lstat(in_buf, &st) != -1) {
            write_error(id, errno);
         } else {
             write_msg(SSH_FXP_ATTRS,
-                WRITE_VAR(id),
+                WRITE_UINT32, id,
                 WRITE_ATTRS(&st),
                 WRITE_END
             );
@@ -608,14 +657,14 @@ int main(void) {
         break;
         
       case SSH_FXP_STAT:
-        READ_VAR(id);
-        READ_STRING(in_buf, sizeof(in_buf));
+        read_uint32(&id);
+        read_string(sizeof(in_buf), in_buf);
 
         if(stat(in_buf, &st) != -1) {
             write_error(id, errno);
         } else {
             write_msg(SSH_FXP_ATTRS,
-                WRITE_VAR(id),
+                WRITE_UINT32, id,
                 WRITE_ATTRS(&st),
                 WRITE_END
             );
@@ -623,9 +672,9 @@ int main(void) {
         break;
         
     case SSH_FXP_MKDIR:
-        READ_VAR(id);
-        READ_STRING(in_buf, sizeof(in_buf));
-        READ_ATTR(&st);
+        read_uint32(&id);
+        read_string(sizeof(in_buf), in_buf);
+        read_attr(&attr_flags, &st);
         
         if(mkdir(in_buf, st.st_mode) == -1) {
             write_error(id, errno);
@@ -635,8 +684,8 @@ int main(void) {
         break;
 
       case SSH_FXP_OPENDIR:
-        READ_VAR(id);
-        READ_STRING(in_buf, sizeof(in_buf));
+        read_uint32(&id);
+        read_string(sizeof(in_buf), in_buf);
         
         dir_path[0] = in_buf;
         dir_handle = fts_open(dir_path, FTS_PHYSICAL, NULL);
@@ -650,7 +699,7 @@ int main(void) {
             handles[h_index].data.dir = dir_handle;
             
             write_msg(SSH_FXP_HANDLE,
-                WRITE_VAR(id),
+                WRITE_UINT32, id,
                 WRITE_DATA(sizeof(h_index), &h_index),
                 WRITE_END
             );
@@ -660,8 +709,8 @@ int main(void) {
         break;
         
       case SSH_FXP_READDIR:
-        READ_VAR(id);
-        READ_STRING_BINARY(&h_index, sizeof(h_index));
+        read_uint32(&id);
+        read_data(sizeof(h_index), &h_index);
         
         if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_DIR) {
             WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
@@ -675,7 +724,7 @@ int main(void) {
               fts_set(dir_handle, ent, FTS_SKIP);
             
             write_msg(SSH_FXP_NAME,
-                WRITE_VAR(id),
+                WRITE_UINT32, id,
                 WRITE_UINT32, 1,
                 WRITE_DATA(ent->fts_namelen, ent->fts_name),
                 WRITE_STRING, ls_l(ent->fts_name, ent->fts_statp), /* TODO: check it is valid */
@@ -688,8 +737,8 @@ int main(void) {
         break;
         
       case SSH_FXP_CLOSE:
-        READ_VAR(id);
-        READ_STRING_BINARY(&h_index, sizeof(h_index));
+        read_uint32(&id);
+        read_data(sizeof(h_index), &h_index);
         
         if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type == HANDLE_EMPTY) {
             WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
@@ -711,9 +760,9 @@ int main(void) {
         WRITE_STATUS(id, SSH_FX_OP_UNSUPPORTED);
         break;      
     }
-
+/*
     while(in_length > 0)
-        READ_DATA(in_buf, MIN(sizeof(in_buf), in_length));
+        READ_DATA(in_buf, MIN(sizeof(in_buf), in_length));*/
   }
   
   return 0;
