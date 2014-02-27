@@ -312,10 +312,13 @@ void write_error(uint32_t id, int error) {
     case EBADF:
     case ENOTEMPTY:
     case ENAMETOOLONG: 
-    case ENOENT:
     case ENOTDIR:
         WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
         break;
+    case ENOENT:
+        WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
+        break;
+    case EDQUOT:
     case EACCES:
     case EPERM:
     case EROFS:
@@ -424,14 +427,16 @@ int main(void) {
                break;
           }
           
-          /* TODO: set the right attrs */
           if(pflags & SSH_FXF_CREAT) {
               fd = open(in_buf, fd_flags, 0644);
           } else {
               fd = open(in_buf, fd_flags);
           }
+          //fsetstat(fd, attr_flags, &st);
           
-          if(fd != -1) {
+          if(fd == -1) {
+              write_error(id, errno);
+          } else {
              h_index = allocate_handle();
              if(h_index == -1) {
                  WRITE_STATUS(id, SSH_FX_FAILURE);
@@ -446,12 +451,6 @@ int main(void) {
                  WRITE_DATA(sizeof(h_index), &h_index),
                  WRITE_END
              );
-          } else if(errno == ENOENT) {
-              WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
-          } else if(errno == EACCES) {
-              WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
-          } else {
-              WRITE_STATUS(id, SSH_FX_FAILURE);
           }
           break;
           
@@ -539,9 +538,20 @@ int main(void) {
         READ_STRING(in_buf, sizeof(in_buf));
         READ_ATTR(&st);
         
-        fd = open(in_buf, O_WRONLY);
-        fsetstat(fd, attr_flags, &st);
-        close(fd);
+        if((fd = open(in_buf, O_WRONLY)) == -1) {
+            write_error(id, errno);
+            break;
+        }
+        if(fsetstat(fd, attr_flags, &st) == -1) {
+            write_error(id, errno);
+            break;
+        }
+        if(close(fd) == -1) {
+            write_error(id, errno);
+            break;
+        }
+        
+        WRITE_STATUS(id, SSH_FX_OK);
         break;
         
     case SSH_FXP_FSETSTAT: /* TODO: return errors */
@@ -555,7 +565,11 @@ int main(void) {
         fd = handles[h_index].data.fd;
         READ_ATTR(&st);
         
-        fsetstat(fd, attr_flags, &st);
+        if(fsetstat(fd, attr_flags, &st) == -1) {
+            write_error(id, errno);
+        } else {
+            WRITE_STATUS(id, SSH_FX_OK);
+        }
         break;
         
     case SSH_FXP_FSTAT:
@@ -567,19 +581,14 @@ int main(void) {
             break;
         }
         fd = handles[h_index].data.fd;
-
-        if(fstat(fd, &st) != -1) {
+        if(fstat(fd, &st) == -1) {
+            write_error(id, errno);
+        } else {
             write_msg(SSH_FXP_ATTRS,
                 WRITE_VAR(id),
                 WRITE_ATTRS(&st),
                 WRITE_END
             );
-        } else if(errno == ENOENT) {
-            WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
-        } else if(errno == EACCES) {
-            WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
-        } else {
-            WRITE_STATUS(id, SSH_FX_FAILURE);
         }
         break;
         
@@ -588,17 +597,13 @@ int main(void) {
         READ_STRING(in_buf, sizeof(in_buf));
 
         if(lstat(in_buf, &st) != -1) {
+           write_error(id, errno);
+        } else {
             write_msg(SSH_FXP_ATTRS,
                 WRITE_VAR(id),
                 WRITE_ATTRS(&st),
                 WRITE_END
             );
-        } else if(errno == ENOENT) {
-            WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
-        } else if(errno == EACCES) {
-            WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
-        } else {
-            WRITE_STATUS(id, SSH_FX_FAILURE);
         }
         break;
         
@@ -607,17 +612,13 @@ int main(void) {
         READ_STRING(in_buf, sizeof(in_buf));
 
         if(stat(in_buf, &st) != -1) {
+            write_error(id, errno);
+        } else {
             write_msg(SSH_FXP_ATTRS,
                 WRITE_VAR(id),
                 WRITE_ATTRS(&st),
                 WRITE_END
             );
-        } else if(errno == ENOENT) {
-            WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
-        } else if(errno == EACCES) {
-            WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
-        } else {
-            WRITE_STATUS(id, SSH_FX_FAILURE);
         }
         break;
         
@@ -627,22 +628,7 @@ int main(void) {
         READ_ATTR(&st);
         
         if(mkdir(in_buf, st.st_mode) == -1) {
-            switch(errno) {
-            case ENOTDIR:
-            case ENAMETOOLONG:
-            case ENOENT:
-                WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-                break;
-            case EDQUOT:
-            case EACCES:
-            case EPERM:
-            case EROFS:
-                WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
-                break;
-            default:
-                WRITE_STATUS(id, SSH_FX_FAILURE);
-                break;
-            }
+            write_error(id, errno);
         } else {
             WRITE_STATUS(id, SSH_FX_OK);
         }
@@ -668,12 +654,8 @@ int main(void) {
                 WRITE_DATA(sizeof(h_index), &h_index),
                 WRITE_END
             );
-        } else if(errno == ENOENT) {
-            WRITE_STATUS(id, SSH_FX_NO_SUCH_FILE);
-        } else if(errno == EACCES) {
-            WRITE_STATUS(id, SSH_FX_PERMISSION_DENIED);
         } else {
-            WRITE_STATUS(id, SSH_FX_FAILURE);
+            write_error(id, errno);
         }
         break;
         
