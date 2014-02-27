@@ -393,376 +393,375 @@ void write_error(uint32_t id, int error) {
     WRITE_UINT32, (st)->st_mtim.tv_sec
 
 int main(void) {
-  uint8_t type;
-  uint32_t version;
-  uint32_t id;
-  uint32_t pflags;
-  
-  uint64_t file_offset;
-  uint32_t file_len;
+    uint8_t type;
+    uint32_t version;
+    uint32_t id;
+    uint32_t pflags;
 
-  uint32_t attr_flags;
-  
-  
-  int h_index;
-  int fd, fd_flags;
-  FTS* dir_handle;
-  FTSENT *ent;
-  char in_buf[4096] = {0}, out_buf[4096] = {0};
-  char* dir_path[2] = {0};
-  char* data_buf;
-  
-  struct stat st;
-  
-  while(read_msg_length() != -1) {
-    read_uint8(&type);
-    
-    switch(type) {
-      case SSH_FXP_INIT:
-        read_uint32(&version);
-        
-        write_msg(SSH_FXP_VERSION,
-            WRITE_UINT32, 3,
-            WRITE_END
-        );
-        break;
-        
-      case SSH_FXP_REALPATH:
-        read_uint32(&id);
-        read_string(sizeof(in_buf), in_buf);
-        
-        realpath(in_buf, out_buf);
-        attr_flags = 0;
-        
-        write_msg(SSH_FXP_NAME,
-            WRITE_UINT32, id,
-            WRITE_UINT32, 1,
-            WRITE_STRING, out_buf,
-            WRITE_STRING, "",
-            WRITE_UINT32, attr_flags,
-            WRITE_END
-        );
-        break;
-        
-      case SSH_FXP_OPEN:
-          read_uint32(&id);
-          read_string(sizeof(in_buf), in_buf);
-          read_uint32(&pflags);
-          read_attr(&attr_flags, &st);
-          
-          /* Check fxp_open attributes */
-          if(pflags & SSH_FXF_READ & SSH_FXF_WRITE)
-              fd_flags = O_RDWR;
-          else if(pflags & SSH_FXF_READ)
-              fd_flags = O_RDONLY;
-          else if(pflags & SSH_FXF_WRITE)
-              fd_flags = O_RDWR;
-          else {
-              WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-              break;
-          }
+    uint64_t file_offset;
+    uint32_t file_len;
 
-          if(pflags & SSH_FXF_APPEND)
-              fd_flags |= O_APPEND;
-          if(pflags & SSH_FXF_CREAT)
-              fd_flags |= O_CREAT;
-          if(pflags & SSH_FXF_TRUNC)
-              fd_flags |= O_TRUNC;
-          if(pflags & SSH_FXF_EXCL)
-              fd_flags |= O_EXCL;
-          
-          if(((pflags & SSH_FXF_EXCL) || (pflags & SSH_FXF_TRUNC)) && !(pflags & SSH_FXF_CREAT)) {
-               WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-               break;
-          }
-          
-          if(pflags & SSH_FXF_CREAT) {
-              fd = open(in_buf, fd_flags, 0644);
-          } else {
-              fd = open(in_buf, fd_flags);
-          }
-          //fsetstat(fd, attr_flags, &st);
-          
-          if(fd == -1) {
-              write_error(id, errno);
-          } else {
-             h_index = allocate_handle();
-             if(h_index == -1) {
-                 WRITE_STATUS(id, SSH_FX_FAILURE);
-                 break;
-             }
-             
-             handles[h_index].type = HANDLE_FD;
-             handles[h_index].data.fd = fd;
-             
-             write_msg(SSH_FXP_HANDLE,
-                 WRITE_UINT32, id,
-                 WRITE_DATA(sizeof(h_index), &h_index),
-                 WRITE_END
-             );
-          }
-          break;
-          
-      case SSH_FXP_READ:
-          read_uint32(&id);
-          read_data(sizeof(h_index), &h_index);
-          read_uint64(&file_offset);
-          read_uint32(&file_len);
+    uint32_t attr_flags;
 
-          if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
-              WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-              break;
-          }
-          
-          fd = handles[h_index].data.fd;
-          fstat(fd, &st);
-          
-          file_len = MIN(st.st_size - file_offset, file_len);
-          if(file_offset >= (uint64_t) st.st_size) {
-              WRITE_STATUS(id, SSH_FX_EOF);
-              break;
-          }
-          
-          data_buf = mmap(NULL, file_len, PROT_READ, MAP_SHARED, fd, file_offset);
-          if(data_buf == MAP_FAILED) {
-              write_error(id, errno);
-          } else {
-              write_msg(SSH_FXP_DATA,
-                  WRITE_UINT32, id,
-                  WRITE_DATA(file_len, data_buf),
-                  WRITE_END
-              );
-              munmap(data_buf, file_len);
-          }
-          break;
+    int h_index;
+    int fd, fd_flags;
+    FTS* dir_handle;
+    FTSENT *ent;
+    char in_buf[4096] = {0}, out_buf[4096] = {0};
+    char* dir_path[2] = {0};
+    char* data_buf;
 
-      case SSH_FXP_WRITE:
-          read_uint32(&id);
-          read_data(sizeof(h_index), &h_index);
-        
-          if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
-              WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-              break;
-          }
-          fd = handles[h_index].data.fd;
-          
-          read_uint64(&file_offset);
-          read_uint32(&file_len);
-          
-          ftruncate(fd, file_offset + file_len);
-          data_buf = mmap(NULL, file_len, PROT_WRITE, MAP_SHARED, fd, file_offset);
-          if(data_buf == MAP_FAILED) {
-              write_error(id, errno);
-          } else {
-              read_msg(file_len, data_buf);
-              WRITE_STATUS(id, SSH_FX_OK);
-              munmap(data_buf, file_len);
-          }
-          break;
-          
-    case SSH_FXP_REMOVE:
-        read_uint32(&id);
-        read_string(sizeof(in_buf), in_buf);
-        
-        if(unlink(in_buf) == -1) {
-            write_error(id, errno);
-        } else {
-            WRITE_STATUS(id, SSH_FX_OK);
-        }
-        break;
-        
-    case SSH_FXP_RMDIR:
-        read_uint32(&id);
-        read_string(sizeof(in_buf), in_buf);
-        
-        if(rmdir(in_buf) == -1) {
-            write_error(id, errno);
-        } else {
-            WRITE_STATUS(id, SSH_FX_OK);
-        }
-        break;
-        
-    case SSH_FXP_SETSTAT: /* TODO: return errors */
-        read_uint32(&id);
-        read_string(sizeof(in_buf), in_buf);
-        read_attr(&attr_flags, &st);
-        
-        if((fd = open(in_buf, O_WRONLY)) == -1) {
-            write_error(id, errno);
-            break;
-        }
-        if(fsetstat(fd, attr_flags, &st) == -1) {
-            write_error(id, errno);
-            break;
-        }
-        if(close(fd) == -1) {
-            write_error(id, errno);
-            break;
-        }
-        
-        WRITE_STATUS(id, SSH_FX_OK);
-        break;
-        
-    case SSH_FXP_FSETSTAT: /* TODO: return errors */
-        read_uint32(&id);
-        read_data(sizeof(h_index), &h_index);
-        
-        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
-            WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-            break;
-        }
-        fd = handles[h_index].data.fd;
-        read_attr(&attr_flags, &st);
+    struct stat st;
 
-        if(fsetstat(fd, attr_flags, &st) == -1) {
-            write_error(id, errno);
-        } else {
-            WRITE_STATUS(id, SSH_FX_OK);
-        }
-        break;
+    while(read_msg_length() != -1) {
+        read_uint8(&type);
         
-    case SSH_FXP_FSTAT:
-        read_uint32(&id);
-        read_data(sizeof(h_index), &h_index);
-        
-        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
-            WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
-            break;
-        }
-        fd = handles[h_index].data.fd;
-        if(fstat(fd, &st) == -1) {
-            write_error(id, errno);
-        } else {
-            write_msg(SSH_FXP_ATTRS,
-                WRITE_UINT32, id,
-                WRITE_ATTRS(&st),
-                WRITE_END
-            );
-        }
-        break;
-        
-      case SSH_FXP_LSTAT:
-        read_uint32(&id);
-        read_string(sizeof(in_buf), in_buf);
-
-        if(lstat(in_buf, &st) != -1) {
-           write_error(id, errno);
-        } else {
-            write_msg(SSH_FXP_ATTRS,
-                WRITE_UINT32, id,
-                WRITE_ATTRS(&st),
-                WRITE_END
-            );
-        }
-        break;
-        
-      case SSH_FXP_STAT:
-        read_uint32(&id);
-        read_string(sizeof(in_buf), in_buf);
-
-        if(stat(in_buf, &st) != -1) {
-            write_error(id, errno);
-        } else {
-            write_msg(SSH_FXP_ATTRS,
-                WRITE_UINT32, id,
-                WRITE_ATTRS(&st),
-                WRITE_END
-            );
-        }
-        break;
-        
-    case SSH_FXP_MKDIR:
-        read_uint32(&id);
-        read_string(sizeof(in_buf), in_buf);
-        read_attr(&attr_flags, &st);
-        
-        if(mkdir(in_buf, st.st_mode) == -1) {
-            write_error(id, errno);
-        } else {
-            WRITE_STATUS(id, SSH_FX_OK);
-        }
-        break;
-
-      case SSH_FXP_OPENDIR:
-        read_uint32(&id);
-        read_string(sizeof(in_buf), in_buf);
-        
-        dir_path[0] = in_buf;
-        dir_handle = fts_open(dir_path, FTS_PHYSICAL, NULL);
-        if(dir_handle && (ent = fts_read(dir_handle)) && ent->fts_info == FTS_D) {
-            h_index = allocate_handle();
-            if(h_index == -1) {
-                 WRITE_STATUS(id, SSH_FX_FAILURE);
-                 break;
-            }
-            handles[h_index].type = HANDLE_DIR;
-            handles[h_index].data.dir = dir_handle;
+        switch(type) {
+        case SSH_FXP_INIT:
+            read_uint32(&version);
             
-            write_msg(SSH_FXP_HANDLE,
-                WRITE_UINT32, id,
-                WRITE_DATA(sizeof(h_index), &h_index),
+            write_msg(SSH_FXP_VERSION,
+                WRITE_UINT32, 3,
                 WRITE_END
             );
-        } else {
-            write_error(id, errno);
-        }
-        break;
-        
-      case SSH_FXP_READDIR:
-        read_uint32(&id);
-        read_data(sizeof(h_index), &h_index);
-        
-        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_DIR) {
-            WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
             break;
-        }
-          
-        dir_handle = handles[h_index].data.dir;
-        while((ent = fts_read(dir_handle)) && ent->fts_info == FTS_DP);
-        if(ent) {
-            if(ent->fts_info == FTS_D)
-              fts_set(dir_handle, ent, FTS_SKIP);
+            
+        case SSH_FXP_REALPATH:
+            read_uint32(&id);
+            read_string(sizeof(in_buf), in_buf);
+            
+            realpath(in_buf, out_buf);
+            attr_flags = 0;
             
             write_msg(SSH_FXP_NAME,
                 WRITE_UINT32, id,
                 WRITE_UINT32, 1,
-                WRITE_DATA(ent->fts_namelen, ent->fts_name),
-                WRITE_STRING, ls_l(ent->fts_name, ent->fts_statp), /* TODO: check it is valid */
-                WRITE_ATTRS(ent->fts_statp),
+                WRITE_STRING, out_buf,
+                WRITE_STRING, "",
+                WRITE_UINT32, attr_flags,
                 WRITE_END
             );
-        } else {
-            WRITE_STATUS(id, SSH_FX_EOF);
-        }
-        break;
-        
-      case SSH_FXP_CLOSE:
-        read_uint32(&id);
-        read_data(sizeof(h_index), &h_index);
-        
-        if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type == HANDLE_EMPTY) {
-            WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
             break;
+            
+        case SSH_FXP_OPEN:
+            read_uint32(&id);
+            read_string(sizeof(in_buf), in_buf);
+            read_uint32(&pflags);
+            read_attr(&attr_flags, &st);
+            
+            /* Check fxp_open attributes */
+            if(pflags & SSH_FXF_READ & SSH_FXF_WRITE)
+                fd_flags = O_RDWR;
+            else if(pflags & SSH_FXF_READ)
+                fd_flags = O_RDONLY;
+            else if(pflags & SSH_FXF_WRITE)
+                fd_flags = O_RDWR;
+            else {
+                WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+                break;
+            }
+
+            if(pflags & SSH_FXF_APPEND)
+                fd_flags |= O_APPEND;
+            if(pflags & SSH_FXF_CREAT)
+                fd_flags |= O_CREAT;
+            if(pflags & SSH_FXF_TRUNC)
+                fd_flags |= O_TRUNC;
+            if(pflags & SSH_FXF_EXCL)
+                fd_flags |= O_EXCL;
+            
+            if(((pflags & SSH_FXF_EXCL) || (pflags & SSH_FXF_TRUNC)) && !(pflags & SSH_FXF_CREAT)) {
+                WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+                break;
+            }
+            
+            if(pflags & SSH_FXF_CREAT) {
+                fd = open(in_buf, fd_flags, 0644);
+            } else {
+                fd = open(in_buf, fd_flags);
+            }
+            //fsetstat(fd, attr_flags, &st);
+            
+            if(fd == -1) {
+                write_error(id, errno);
+            } else {
+                h_index = allocate_handle();
+                if(h_index == -1) {
+                    WRITE_STATUS(id, SSH_FX_FAILURE);
+                    break;
+                }
+                
+                handles[h_index].type = HANDLE_FD;
+                handles[h_index].data.fd = fd;
+                
+                write_msg(SSH_FXP_HANDLE,
+                    WRITE_UINT32, id,
+                    WRITE_DATA(sizeof(h_index), &h_index),
+                    WRITE_END
+                );
+            }
+            break;
+            
+        case SSH_FXP_READ:
+            read_uint32(&id);
+            read_data(sizeof(h_index), &h_index);
+            read_uint64(&file_offset);
+            read_uint32(&file_len);
+
+            if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+                WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+                break;
+            }
+            
+            fd = handles[h_index].data.fd;
+            fstat(fd, &st);
+            
+            file_len = MIN(st.st_size - file_offset, file_len);
+            if(file_offset >= (uint64_t) st.st_size) {
+                WRITE_STATUS(id, SSH_FX_EOF);
+                break;
+            }
+            
+            data_buf = mmap(NULL, file_len, PROT_READ, MAP_SHARED, fd, file_offset);
+            if(data_buf == MAP_FAILED) {
+                write_error(id, errno);
+            } else {
+                write_msg(SSH_FXP_DATA,
+                    WRITE_UINT32, id,
+                    WRITE_DATA(file_len, data_buf),
+                    WRITE_END
+                );
+                munmap(data_buf, file_len);
+            }
+            break;
+
+        case SSH_FXP_WRITE:
+            read_uint32(&id);
+            read_data(sizeof(h_index), &h_index);
+            
+            if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+                WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+                break;
+            }
+            fd = handles[h_index].data.fd;
+            
+            read_uint64(&file_offset);
+            read_uint32(&file_len);
+            
+            ftruncate(fd, file_offset + file_len);
+            data_buf = mmap(NULL, file_len, PROT_WRITE, MAP_SHARED, fd, file_offset);
+            if(data_buf == MAP_FAILED) {
+                write_error(id, errno);
+            } else {
+                read_msg(file_len, data_buf);
+                WRITE_STATUS(id, SSH_FX_OK);
+                munmap(data_buf, file_len);
+            }
+            break;
+            
+        case SSH_FXP_REMOVE:
+            read_uint32(&id);
+            read_string(sizeof(in_buf), in_buf);
+            
+            if(unlink(in_buf) == -1) {
+                write_error(id, errno);
+            } else {
+                WRITE_STATUS(id, SSH_FX_OK);
+            }
+            break;
+            
+        case SSH_FXP_RMDIR:
+            read_uint32(&id);
+            read_string(sizeof(in_buf), in_buf);
+            
+            if(rmdir(in_buf) == -1) {
+                write_error(id, errno);
+            } else {
+                WRITE_STATUS(id, SSH_FX_OK);
+            }
+            break;
+            
+        case SSH_FXP_SETSTAT: /* TODO: return errors */
+            read_uint32(&id);
+            read_string(sizeof(in_buf), in_buf);
+            read_attr(&attr_flags, &st);
+            
+            if((fd = open(in_buf, O_WRONLY)) == -1) {
+                write_error(id, errno);
+                break;
+            }
+            if(fsetstat(fd, attr_flags, &st) == -1) {
+                write_error(id, errno);
+                break;
+            }
+            if(close(fd) == -1) {
+                write_error(id, errno);
+                break;
+            }
+            
+            WRITE_STATUS(id, SSH_FX_OK);
+            break;
+            
+        case SSH_FXP_FSETSTAT: /* TODO: return errors */
+            read_uint32(&id);
+            read_data(sizeof(h_index), &h_index);
+            
+            if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+                WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+                break;
+            }
+            fd = handles[h_index].data.fd;
+            read_attr(&attr_flags, &st);
+
+            if(fsetstat(fd, attr_flags, &st) == -1) {
+                write_error(id, errno);
+            } else {
+                WRITE_STATUS(id, SSH_FX_OK);
+            }
+            break;
+            
+        case SSH_FXP_FSTAT:
+            read_uint32(&id);
+            read_data(sizeof(h_index), &h_index);
+            
+            if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+                WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+                break;
+            }
+            fd = handles[h_index].data.fd;
+            if(fstat(fd, &st) == -1) {
+                write_error(id, errno);
+            } else {
+                write_msg(SSH_FXP_ATTRS,
+                    WRITE_UINT32, id,
+                    WRITE_ATTRS(&st),
+                    WRITE_END
+                );
+            }
+            break;
+            
+        case SSH_FXP_LSTAT:
+            read_uint32(&id);
+            read_string(sizeof(in_buf), in_buf);
+
+            if(lstat(in_buf, &st) != -1) {
+            write_error(id, errno);
+            } else {
+                write_msg(SSH_FXP_ATTRS,
+                    WRITE_UINT32, id,
+                    WRITE_ATTRS(&st),
+                    WRITE_END
+                );
+            }
+            break;
+            
+        case SSH_FXP_STAT:
+            read_uint32(&id);
+            read_string(sizeof(in_buf), in_buf);
+
+            if(stat(in_buf, &st) != -1) {
+                write_error(id, errno);
+            } else {
+                write_msg(SSH_FXP_ATTRS,
+                    WRITE_UINT32, id,
+                    WRITE_ATTRS(&st),
+                    WRITE_END
+                );
+            }
+            break;
+            
+        case SSH_FXP_MKDIR:
+            read_uint32(&id);
+            read_string(sizeof(in_buf), in_buf);
+            read_attr(&attr_flags, &st);
+            
+            if(mkdir(in_buf, st.st_mode) == -1) {
+                write_error(id, errno);
+            } else {
+                WRITE_STATUS(id, SSH_FX_OK);
+            }
+            break;
+
+        case SSH_FXP_OPENDIR:
+            read_uint32(&id);
+            read_string(sizeof(in_buf), in_buf);
+            
+            dir_path[0] = in_buf;
+            dir_handle = fts_open(dir_path, FTS_PHYSICAL, NULL);
+            if(dir_handle && (ent = fts_read(dir_handle)) && ent->fts_info == FTS_D) {
+                h_index = allocate_handle();
+                if(h_index == -1) {
+                    WRITE_STATUS(id, SSH_FX_FAILURE);
+                    break;
+                }
+                handles[h_index].type = HANDLE_DIR;
+                handles[h_index].data.dir = dir_handle;
+                
+                write_msg(SSH_FXP_HANDLE,
+                    WRITE_UINT32, id,
+                    WRITE_DATA(sizeof(h_index), &h_index),
+                    WRITE_END
+                );
+            } else {
+                write_error(id, errno);
+            }
+            break;
+            
+        case SSH_FXP_READDIR:
+            read_uint32(&id);
+            read_data(sizeof(h_index), &h_index);
+            
+            if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_DIR) {
+                WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+                break;
+            }
+            
+            dir_handle = handles[h_index].data.dir;
+            while((ent = fts_read(dir_handle)) && ent->fts_info == FTS_DP);
+            if(ent) {
+                if(ent->fts_info == FTS_D)
+                fts_set(dir_handle, ent, FTS_SKIP);
+                
+                write_msg(SSH_FXP_NAME,
+                    WRITE_UINT32, id,
+                    WRITE_UINT32, 1,
+                    WRITE_DATA(ent->fts_namelen, ent->fts_name),
+                    WRITE_STRING, ls_l(ent->fts_name, ent->fts_statp), /* TODO: check it is valid */
+                    WRITE_ATTRS(ent->fts_statp),
+                    WRITE_END
+                );
+            } else {
+                WRITE_STATUS(id, SSH_FX_EOF);
+            }
+            break;
+            
+        case SSH_FXP_CLOSE:
+            read_uint32(&id);
+            read_data(sizeof(h_index), &h_index);
+            
+            if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type == HANDLE_EMPTY) {
+                WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
+                break;
+            }
+            
+            if(handles[h_index].type == HANDLE_DIR)
+                fts_close(handles[h_index].data.dir);
+            else if(handles[h_index].type == HANDLE_FD)
+                close(handles[h_index].data.fd);
+            
+            handles[h_index].type = HANDLE_EMPTY;
+            
+            WRITE_STATUS(id, SSH_FX_OK);
+            break;
+            
+        default: /* Unknown command */
+            fprintf(stderr, "Unknown command: %i\n", type);
+            WRITE_STATUS(id, SSH_FX_OP_UNSUPPORTED);
+            break;      
         }
-        
-        if(handles[h_index].type == HANDLE_DIR)
-            fts_close(handles[h_index].data.dir);
-        else if(handles[h_index].type == HANDLE_FD)
-            close(handles[h_index].data.fd);
-        
-        handles[h_index].type = HANDLE_EMPTY;
-        
-        WRITE_STATUS(id, SSH_FX_OK);
-        break;
-        
-      default: /* Unknown command */
-        fprintf(stderr, "Unknown command: %i\n", type);
-        WRITE_STATUS(id, SSH_FX_OP_UNSUPPORTED);
-        break;      
-    }
-/*
-    while(in_length > 0)
-        READ_DATA(in_buf, MIN(sizeof(in_buf), in_length));*/
+    /*
+        while(in_length > 0)
+            READ_DATA(in_buf, MIN(sizeof(in_buf), in_length));*/
   }
   
   return 0;
