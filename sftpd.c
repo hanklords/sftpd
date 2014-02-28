@@ -134,6 +134,11 @@ ssize_t read_string(ssize_t size, char* data) {
     data[r + 1] = '\0';
     return r;
 }
+#define read_var(v) do {\
+    if(read_data(sizeof(*(v)), (v)) != sizeof(*(v))) { \
+        WRITE_STATUS(id, SSH_FX_BAD_MESSAGE); \
+    } \
+} while(0) 
 
 ssize_t read_attr(uint32_t *attr_flags, struct stat* st) { /* TODO: check errors */
     ssize_t r;
@@ -504,7 +509,7 @@ int main(void) {
             
         case SSH_FXP_READ:
             read_uint32(&id);
-            read_data(sizeof(h_index), &h_index);
+            read_var(&h_index);
             read_uint64(&file_offset);
             read_uint32(&file_len);
 
@@ -537,7 +542,7 @@ int main(void) {
 
         case SSH_FXP_WRITE:
             read_uint32(&id);
-            read_data(sizeof(h_index), &h_index);
+            read_var(&h_index);
             
             if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
                 WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
@@ -604,7 +609,7 @@ int main(void) {
             
         case SSH_FXP_FSETSTAT: /* TODO: return errors */
             read_uint32(&id);
-            read_data(sizeof(h_index), &h_index);
+            read_var(&h_index);
             
             if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
                 WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
@@ -622,7 +627,7 @@ int main(void) {
             
         case SSH_FXP_FSTAT:
             read_uint32(&id);
-            read_data(sizeof(h_index), &h_index);
+            read_var(&h_index);
             
             if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
                 WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
@@ -709,7 +714,7 @@ int main(void) {
             
         case SSH_FXP_READDIR:
             read_uint32(&id);
-            read_data(sizeof(h_index), &h_index);
+            read_var(&h_index);
             
             if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_DIR) {
                 WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
@@ -737,7 +742,7 @@ int main(void) {
             
         case SSH_FXP_CLOSE:
             read_uint32(&id);
-            read_data(sizeof(h_index), &h_index);
+            read_var(&h_index);
             
             if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type == HANDLE_EMPTY) {
                 WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
