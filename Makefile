@@ -12,7 +12,7 @@ test: $(PROGRAM)
 
 release:
 	$(MAKE) clean
-	$(MAKE) CFLAGS=-Os LDFLAGS="$(LDFLAGS) -s"
+	$(MAKE) CFLAGS=-O3 LDFLAGS="$(LDFLAGS) -s"
 
 clean:
 	$(RM) $(PROGRAM) $(OBJS)
