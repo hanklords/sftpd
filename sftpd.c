@@ -79,6 +79,32 @@
 
 #define MIN(a,b) ((a) < (b) ? a : b)
 
+struct handle {
+    enum {HANDLE_EMPTY, HANDLE_FD, HANDLE_DIR} type;
+    union {
+        int fd;
+        FTS* dir;
+    } data;
+};
+
+#define MAX_HANDLES 1024
+struct handle handles[MAX_HANDLES];
+
+int allocate_handle(void) {
+    static int n_handles;
+    int i;
+    
+    if(n_handles > MAX_HANDLES / 2)
+        return -1;
+    
+    do {
+        i = rand();
+    } while(i >= MAX_HANDLES || handles[i].type != HANDLE_EMPTY);
+    
+    n_handles++;
+    return i;
+}
+
 #define READ_MSG_LENGTH -1
 
 ssize_t read_msg(ssize_t size, void* data);
@@ -181,6 +207,16 @@ ssize_t read_attr(uint32_t *attr_flags, struct stat* st) { /* TODO: check errors
     return r;
 }
 
+struct handle* read_handle(unsigned int type) {
+    int h_index;
+
+    read_data(sizeof(h_index), &h_index); /* TODO: Check error */
+    if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != type)
+        return NULL;
+
+    return &handles[h_index];
+}
+
 ssize_t read_msg(ssize_t size, void* data) {
     static uint32_t length;
     ssize_t len;
@@ -262,32 +298,6 @@ char* ls_l(const char* name, const struct stat* st) {
     );
 
     return buf;
-}
-
-struct handle {
-    enum {HANDLE_EMPTY, HANDLE_FD, HANDLE_DIR} type;
-    union {
-        int fd;
-        FTS* dir;
-    } data;
-};
-
-#define MAX_HANDLES 1024
-struct handle handles[1024];
-
-int allocate_handle(void) {
-    static int n_handles;
-    int i;
-    
-    if(n_handles > MAX_HANDLES / 2)
-        return -1;
-    
-    do {
-        i = rand();
-    } while(i >= MAX_HANDLES || handles[i].type != HANDLE_EMPTY);
-    
-    n_handles++;
-    return i;
 }
 
 #define WRITE_STRING -1
@@ -651,7 +661,7 @@ int main(void) {
             read_string(sizeof(in_buf), in_buf);
 
             if(lstat(in_buf, &st) != -1) {
-            write_error(id, errno);
+                write_error(id, errno);
             } else {
                 write_msg(SSH_FXP_ATTRS,
                     WRITE_UINT32, id,
@@ -713,7 +723,7 @@ int main(void) {
             }
             break;
             
-        case SSH_FXP_READDIR:
+        case SSH_FXP_READDIR: /* TODO: return several entries at a time */
             read_uint32(&id);
             read_var(&h_index);
             
