@@ -134,6 +134,7 @@ ssize_t read_string(ssize_t size, char* data) {
     data[r + 1] = '\0';
     return r;
 }
+
 #define read_var(v) do {\
     if(read_data(sizeof(*(v)), (v)) != sizeof(*(v))) { \
         WRITE_STATUS(id, SSH_FX_BAD_MESSAGE); \
