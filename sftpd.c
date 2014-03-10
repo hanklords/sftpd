@@ -432,6 +432,7 @@ int main(void) {
     while(read_msg_length() != -1) {
         read_uint8(&type);
         
+        fprintf(stderr, "type: %u\n", type);
         switch(type) {
         case SSH_FXP_INIT:
             read_uint32(&version);
@@ -660,7 +661,7 @@ int main(void) {
             read_uint32(&id);
             read_string(sizeof(in_buf), in_buf);
 
-            if(lstat(in_buf, &st) != -1) {
+            if(lstat(in_buf, &st) == -1) {
                 write_error(id, errno);
             } else {
                 write_msg(SSH_FXP_ATTRS,
@@ -675,7 +676,7 @@ int main(void) {
             read_uint32(&id);
             read_string(sizeof(in_buf), in_buf);
 
-            if(stat(in_buf, &st) != -1) {
+            if(stat(in_buf, &st) == -1) {
                 write_error(id, errno);
             } else {
                 write_msg(SSH_FXP_ATTRS,
