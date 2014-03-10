@@ -1,5 +1,5 @@
 PROGRAM = sftpd
-CFLAGS = -Wall -Wextra -std=c11 -Wno-format -D_DEFAULT_SOURCE -g
+CFLAGS = -Wall -Wextra -Wno-format -D_DEFAULT_SOURCE -g
 #LDFLAGS = -L.
 #LDLIBS = -lxxx
 SRCS = $(wildcard *.c)
