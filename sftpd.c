@@ -16,14 +16,6 @@
 #include <pwd.h>
 #include <grp.h>
 
-#ifndef TIMESPEC_TO_TIMEVAL
-#define TIMESPEC_TO_TIMEVAL(tv, ts) {                   \
-    (tv)->tv_sec = (ts)->tv_sec;                    \
-    (tv)->tv_usec = (ts)->tv_nsec / 1000;               \
-}
-#endif
-
-
 #define SSH_FXP_INIT                1
 #define SSH_FXP_VERSION             2
 #define SSH_FXP_OPEN                3
@@ -197,11 +189,11 @@ ssize_t read_attr(uint32_t *attr_flags, struct stat* st) { /* TODO: check errors
     }
     if(*attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {\
         read_uint32(&attr_atime);
-        st->st_atim.tv_sec = attr_atime;
+        st->st_atime = attr_atime;
     }
     if(*attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {\
         read_uint32(&attr_mtime);
-        st->st_mtim.tv_sec = attr_mtime;
+        st->st_mtime = attr_mtime;
     }
     
     return r;
@@ -237,7 +229,7 @@ ssize_t read_msg(ssize_t size, void* data) {
 
 int fsetstat(int fd, uint32_t attr_flags, struct stat* st) {
     int ret;
-    struct timeval amtimes[2];
+    struct timeval amtimes[2] = {0};
 
     
     if(attr_flags & SSH_FILEXFER_ATTR_SIZE) {
@@ -253,8 +245,8 @@ int fsetstat(int fd, uint32_t attr_flags, struct stat* st) {
              return ret;
     }
     if(attr_flags & SSH_FILEXFER_ATTR_ACMODTIME) {
-        TIMESPEC_TO_TIMEVAL(&amtimes[0], &st->st_atim);
-        TIMESPEC_TO_TIMEVAL(&amtimes[1], &st->st_mtim);
+		amtimes[0].tv_sec = st->st_atime;
+		amtimes[1].tv_sec = st->st_mtime;
         if((ret = futimes(fd, amtimes)) == -1)
             return ret;
     }
@@ -283,7 +275,7 @@ char* ls_l(const char* name, const struct stat* st) {
             file_type_symbol = '-';
     }
 
-    mtime = localtime(&st->st_mtim.tv_sec);
+    mtime = localtime(&st->st_mtime);
     pw = getpwuid(st->st_uid);
     grp = getgrgid(st->st_gid);
     
@@ -405,8 +397,8 @@ void write_error(uint32_t id, int error) {
     WRITE_UINT64, (st)->st_size,  \
     WRITE_UINT32, (st)->st_uid, WRITE_UINT32, (st)->st_gid, \
     WRITE_UINT32, (st)->st_mode,   \
-    WRITE_UINT32, (st)->st_atim.tv_sec,\
-    WRITE_UINT32, (st)->st_mtim.tv_sec
+    WRITE_UINT32, (st)->st_atime,\
+    WRITE_UINT32, (st)->st_mtime
 
 int main(void) {
     uint8_t type;
