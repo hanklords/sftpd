@@ -394,7 +394,7 @@ void write_error(uint32_t id, int error) {
 
 #define WRITE_ATTRS(st) \
     WRITE_UINT32, SSH_FILEXFER_ATTR_SIZE | SSH_FILEXFER_ATTR_UIDGID | SSH_FILEXFER_ATTR_PERMISSIONS | SSH_FILEXFER_ATTR_ACMODTIME, \
-    WRITE_UINT64, (st)->st_size,  \
+    WRITE_UINT64, (uint64_t) (st)->st_size,  \
     WRITE_UINT32, (st)->st_uid, WRITE_UINT32, (st)->st_gid, \
     WRITE_UINT32, (st)->st_mode,   \
     WRITE_UINT32, (st)->st_atime,\
