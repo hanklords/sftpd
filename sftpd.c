@@ -134,7 +134,7 @@ ssize_t read_data(ssize_t size, void* data) {
     if((r = read_uint32(&data_length)) == -1)
         return r;
     
-    if(data_length > size)
+    if(data_length > (size_t) size)
         return -1;
 
     if((r = read_msg(data_length, data)) == -1)
