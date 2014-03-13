@@ -292,9 +292,9 @@ char* ls_l(const char* name, const struct stat* st) {
     return buf;
 }
 
-#define WRITE_STRING -1
-#define WRITE_UINT32 -2
-#define WRITE_UINT64 -3
+#define WRITE_MSG_STRING -1
+#define WRITE_MSG_UINT32 -2
+#define WRITE_MSG_UINT64 -3
 #define WRITE_END 0
 
 void write_msg(uint8_t type, ...) {
@@ -306,14 +306,14 @@ void write_msg(uint8_t type, ...) {
     va_start(ap, type);
     for(var_length = va_arg(ap, size_t); var_length != WRITE_END; var_length = va_arg(ap, size_t)) {
         switch(var_length) {
-        case WRITE_STRING:
+        case WRITE_MSG_STRING:
             msg_length += sizeof(uint32_t) + strlen(va_arg(ap, char*));
             break;
-        case WRITE_UINT32:
+        case WRITE_MSG_UINT32:
             va_arg(ap, uint32_t);
             msg_length += sizeof(uint32_t);
             break;
-        case WRITE_UINT64:
+        case WRITE_MSG_UINT64:
             va_arg(ap, uint64_t);
             msg_length += sizeof(uint64_t);
             break;
@@ -337,17 +337,17 @@ void write_msg(uint8_t type, ...) {
         uint64_t write_var64;
         
         switch(var_length) {
-        case WRITE_STRING:
+        case WRITE_MSG_STRING:
             write_str = va_arg(ap, char*);
             write_var32 = htonl(strlen(write_str));
             write(STDOUT_FILENO, &write_var32, sizeof(uint32_t));
             write(STDOUT_FILENO, write_str, strlen(write_str));
             break;
-        case WRITE_UINT32:
+        case WRITE_MSG_UINT32:
             write_var32 = htonl(va_arg(ap, uint32_t));
             write(STDOUT_FILENO, &write_var32, sizeof(uint32_t));
             break;
-        case WRITE_UINT64:
+        case WRITE_MSG_UINT64:
             write_var64 = htobe64(va_arg(ap, uint64_t));
             write(STDOUT_FILENO, &write_var64, sizeof(uint64_t));
             break;
@@ -360,13 +360,16 @@ void write_msg(uint8_t type, ...) {
 }
 
 #define WRITE_VAR(v) sizeof(v), &(v)
-#define WRITE_DATA(size, data) WRITE_UINT32, (size), (size), (data)
+#define WRITE_DATA(size, data) WRITE_MSG_UINT32, (size), (size), (data)
+#define WRITE_STRING(str) WRITE_MSG_STRING, (str)
+#define WRITE_UINT32(var) WRITE_MSG_UINT32, (uint32_t) var
+#define WRITE_UINT64(var) WRITE_MSG_UINT64, (uint64_t) var
 
 #define WRITE_STATUS(id, code) write_msg(SSH_FXP_STATUS, \
-    WRITE_UINT32, id, \
-    WRITE_UINT32, (code), \
-    WRITE_STRING, "", \
-    WRITE_STRING, "", \
+    WRITE_UINT32(id),   \
+    WRITE_UINT32(code), \
+    WRITE_STRING(""),   \
+    WRITE_STRING(""),   \
     WRITE_END)
 
 void write_error(uint32_t id, int error) {
@@ -393,12 +396,12 @@ void write_error(uint32_t id, int error) {
 }
 
 #define WRITE_ATTRS(st) \
-    WRITE_UINT32, SSH_FILEXFER_ATTR_SIZE | SSH_FILEXFER_ATTR_UIDGID | SSH_FILEXFER_ATTR_PERMISSIONS | SSH_FILEXFER_ATTR_ACMODTIME, \
-    WRITE_UINT64, (uint64_t) (st)->st_size,  \
-    WRITE_UINT32, (st)->st_uid, WRITE_UINT32, (st)->st_gid, \
-    WRITE_UINT32, (st)->st_mode,   \
-    WRITE_UINT32, (st)->st_atime,\
-    WRITE_UINT32, (st)->st_mtime
+    WRITE_UINT32(SSH_FILEXFER_ATTR_SIZE | SSH_FILEXFER_ATTR_UIDGID | SSH_FILEXFER_ATTR_PERMISSIONS | SSH_FILEXFER_ATTR_ACMODTIME), \
+    WRITE_UINT64((st)->st_size),  \
+    WRITE_UINT32((st)->st_uid), WRITE_UINT32((st)->st_gid), \
+    WRITE_UINT32((st)->st_mode),   \
+    WRITE_UINT32((st)->st_atime),  \
+    WRITE_UINT32((st)->st_mtime)
 
 int main(void) {
     uint8_t type;
@@ -430,7 +433,7 @@ int main(void) {
             read_uint32(&version);
             
             write_msg(SSH_FXP_VERSION,
-                WRITE_UINT32, 3,
+                WRITE_MSG_UINT32, 3,
                 WRITE_END
             );
             break;
@@ -443,11 +446,11 @@ int main(void) {
             attr_flags = 0;
             
             write_msg(SSH_FXP_NAME,
-                WRITE_UINT32, id,
-                WRITE_UINT32, 1,
-                WRITE_STRING, out_buf,
-                WRITE_STRING, "",
-                WRITE_UINT32, attr_flags,
+                WRITE_UINT32(id),
+                WRITE_UINT32(1),
+                WRITE_STRING(out_buf),
+                WRITE_STRING(""),
+                WRITE_UINT32(attr_flags),
                 WRITE_END
             );
             break;
@@ -504,7 +507,7 @@ int main(void) {
                 handles[h_index].data.fd = fd;
                 
                 write_msg(SSH_FXP_HANDLE,
-                    WRITE_UINT32, id,
+                    WRITE_UINT32(id),
                     WRITE_DATA(sizeof(h_index), &h_index),
                     WRITE_END
                 );
@@ -536,7 +539,7 @@ int main(void) {
                 write_error(id, errno);
             } else {
                 write_msg(SSH_FXP_DATA,
-                    WRITE_UINT32, id,
+                    WRITE_UINT32(id),
                     WRITE_DATA(file_len, data_buf),
                     WRITE_END
                 );
@@ -642,7 +645,7 @@ int main(void) {
                 write_error(id, errno);
             } else {
                 write_msg(SSH_FXP_ATTRS,
-                    WRITE_UINT32, id,
+                    WRITE_UINT32(id),
                     WRITE_ATTRS(&st),
                     WRITE_END
                 );
@@ -657,7 +660,7 @@ int main(void) {
                 write_error(id, errno);
             } else {
                 write_msg(SSH_FXP_ATTRS,
-                    WRITE_UINT32, id,
+                    WRITE_UINT32(id),
                     WRITE_ATTRS(&st),
                     WRITE_END
                 );
@@ -672,7 +675,7 @@ int main(void) {
                 write_error(id, errno);
             } else {
                 write_msg(SSH_FXP_ATTRS,
-                    WRITE_UINT32, id,
+                    WRITE_UINT32(id),
                     WRITE_ATTRS(&st),
                     WRITE_END
                 );
@@ -707,7 +710,7 @@ int main(void) {
                 handles[h_index].data.dir = dir_handle;
                 
                 write_msg(SSH_FXP_HANDLE,
-                    WRITE_UINT32, id,
+                    WRITE_UINT32(id),
                     WRITE_DATA(sizeof(h_index), &h_index),
                     WRITE_END
                 );
@@ -732,10 +735,10 @@ int main(void) {
                 fts_set(dir_handle, ent, FTS_SKIP);
                 
                 write_msg(SSH_FXP_NAME,
-                    WRITE_UINT32, id,
-                    WRITE_UINT32, 1,
+                    WRITE_UINT32(id),
+                    WRITE_UINT32(1),
                     WRITE_DATA(ent->fts_namelen, ent->fts_name),
-                    WRITE_STRING, ls_l(ent->fts_name, ent->fts_statp), /* TODO: check it is valid */
+                    WRITE_STRING(ls_l(ent->fts_name, ent->fts_statp)), /* TODO: check it is valid */
                     WRITE_ATTRS(ent->fts_statp),
                     WRITE_END
                 );
