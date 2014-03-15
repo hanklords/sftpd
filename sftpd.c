@@ -732,7 +732,7 @@ int main(void) {
             while((ent = fts_read(dir_handle)) && ent->fts_info == FTS_DP);
             if(ent) {
                 if(ent->fts_info == FTS_D)
-                fts_set(dir_handle, ent, FTS_SKIP);
+                    fts_set(dir_handle, ent, FTS_SKIP);
                 
                 write_msg(SSH_FXP_NAME,
                     WRITE_UINT32(id),
