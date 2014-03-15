@@ -259,10 +259,16 @@ int fsetstat(int fd, uint32_t attr_flags, struct stat* st) {
 char* ls_l(const char* name, const struct stat* st) {
     static char buf[2048];
     struct tm* mtime;
-    struct passwd* pw;
-    struct group* grp;
+    struct passwd* pw; char pw_num_str[6];
+    struct group* grp; char grp_num_str[6];
     char file_type_symbol;
     
+    snprintf(pw_num_str, sizeof(pw_num_str), "%u", st->st_uid);
+    snprintf(grp_num_str, sizeof(grp_num_str), "%u", st->st_gid);
+    pw = getpwuid(st->st_uid);
+    grp = getgrgid(st->st_gid);
+    mtime = localtime(&st->st_mtime);
+
     switch(st->st_mode & S_IFMT) {
         case S_IFIFO : file_type_symbol = 'p'; break;
         case S_IFCHR : file_type_symbol = 'c'; break;
@@ -275,16 +281,14 @@ char* ls_l(const char* name, const struct stat* st) {
             file_type_symbol = '-';
     }
 
-    mtime = localtime(&st->st_mtime);
-    pw = getpwuid(st->st_uid);
-    grp = getgrgid(st->st_gid);
-    
     snprintf(buf, sizeof(buf), "%c%c%c%c%c%c%c%c%c%c %3u %8s %8s %8u %u-%02u-%02u % 2u:%02u %s",
         file_type_symbol,
         GET_RIGHT_SYMBOL(st, S_IRUSR, 'r'), GET_RIGHT_SYMBOL(st, S_IWUSR, 'w'), GET_RIGHT_SYMBOL(st, S_IXUSR, 'x'),
         GET_RIGHT_SYMBOL(st, S_IRGRP, 'r'), GET_RIGHT_SYMBOL(st, S_IWGRP, 'w'), GET_RIGHT_SYMBOL(st, S_IXGRP, 'x'),
         GET_RIGHT_SYMBOL(st, S_IROTH, 'r'), GET_RIGHT_SYMBOL(st, S_IWOTH, 'w'), GET_RIGHT_SYMBOL(st, S_IXOTH, 'x'),
-        st->st_nlink, pw->pw_name, grp->gr_name, st->st_size,
+        st->st_nlink,
+        pw  ? pw->pw_name  : pw_num_str, grp ? grp->gr_name : grp_num_str,
+        st->st_size,
         1900 + mtime->tm_year, mtime->tm_mon + 1, mtime->tm_mday, mtime->tm_hour, mtime->tm_min,
         name
     );
