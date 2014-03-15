@@ -431,7 +431,6 @@ int main(void) {
     while(read_msg_length() != -1) {
         read_uint8(&type);
         
-        fprintf(stderr, "type: %u\n", type);
         switch(type) {
         case SSH_FXP_INIT:
             read_uint32(&version);
