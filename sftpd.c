@@ -199,14 +199,18 @@ ssize_t read_attr(uint32_t *attr_flags, struct stat* st) { /* TODO: check errors
     return r;
 }
 
-struct handle* read_handle(unsigned int type) {
+ssize_t read_handle_fd(int *pfd) {
+    ssize_t r;
     int h_index;
 
-    read_data(sizeof(h_index), &h_index); /* TODO: Check error */
-    if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != type)
-        return NULL;
+    *pfd = -1;
+    if((r = read_data(sizeof(h_index), &h_index)) == -1)
+        return r;
+    if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD)
+        return -1;
 
-    return &handles[h_index];
+    *pfd = handles[h_index].data.fd;
+    return r;
 }
 
 ssize_t read_msg(ssize_t size, void* data) {
@@ -231,7 +235,6 @@ int fsetstat(int fd, uint32_t attr_flags, struct stat* st) {
     int ret;
     struct timeval amtimes[2] = {0};
 
-    
     if(attr_flags & SSH_FILEXFER_ATTR_SIZE) {
         if((ret = ftruncate(fd, st->st_size)) == -1)
             return ret;
@@ -436,7 +439,7 @@ int main(void) {
             read_uint32(&version);
             
             write_msg(SSH_FXP_VERSION,
-                WRITE_MSG_UINT32, 3,
+                WRITE_UINT32(3),
                 WRITE_END
             );
             break;
@@ -446,14 +449,13 @@ int main(void) {
             read_string(sizeof(in_buf), in_buf);
             
             realpath(in_buf, out_buf);
-            attr_flags = 0;
             
             write_msg(SSH_FXP_NAME,
                 WRITE_UINT32(id),
                 WRITE_UINT32(1),
                 WRITE_STRING(out_buf),
                 WRITE_STRING(""),
-                WRITE_UINT32(attr_flags),
+                WRITE_UINT32(0),
                 WRITE_END
             );
             break;
@@ -519,16 +521,15 @@ int main(void) {
             
         case SSH_FXP_READ:
             read_uint32(&id);
-            read_var(&h_index);
+            read_handle_fd(&fd);
             read_uint64(&file_offset);
             read_uint32(&file_len);
 
-            if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+            if(fd < 0) {
                 WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
                 break;
             }
             
-            fd = handles[h_index].data.fd;
             fstat(fd, &st);
             
             file_len = MIN(st.st_size - file_offset, file_len);
@@ -552,16 +553,14 @@ int main(void) {
 
         case SSH_FXP_WRITE:
             read_uint32(&id);
-            read_var(&h_index);
+            read_handle_fd(&fd);
+            read_uint64(&file_offset);
+            read_uint32(&file_len);
             
-            if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+            if(fd < 0) {
                 WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
                 break;
             }
-            fd = handles[h_index].data.fd;
-            
-            read_uint64(&file_offset);
-            read_uint32(&file_len);
             
             ftruncate(fd, file_offset + file_len);
             data_buf = mmap(NULL, file_len, PROT_WRITE, MAP_SHARED, fd, file_offset);
@@ -619,14 +618,13 @@ int main(void) {
             
         case SSH_FXP_FSETSTAT: /* TODO: return errors */
             read_uint32(&id);
-            read_var(&h_index);
-            
-            if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+            read_handle_fd(&fd);
+            read_attr(&attr_flags, &st);
+
+            if(fd < 0) {
                 WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
                 break;
             }
-            fd = handles[h_index].data.fd;
-            read_attr(&attr_flags, &st);
 
             if(fsetstat(fd, attr_flags, &st) == -1) {
                 write_error(id, errno);
@@ -637,13 +635,13 @@ int main(void) {
             
         case SSH_FXP_FSTAT:
             read_uint32(&id);
-            read_var(&h_index);
-            
-            if(h_index < 0 || h_index >= MAX_HANDLES || handles[h_index].type != HANDLE_FD) {
+            read_handle_fd(&fd);
+
+            if(fd < 0) {
                 WRITE_STATUS(id, SSH_FX_BAD_MESSAGE);
                 break;
             }
-            fd = handles[h_index].data.fd;
+            
             if(fstat(fd, &st) == -1) {
                 write_error(id, errno);
             } else {

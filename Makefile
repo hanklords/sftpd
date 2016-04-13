@@ -1,6 +1,6 @@
 PROGRAM = sftpd
-CPPFLAGS = -Wall -Wextra -Wno-format -D_DEFAULT_SOURCE
-CFLAGS = -g
+#CPPFLAGS = -Wall -Wextra -Wno-format -D_DEFAULT_SOURCE
+#CFLAGS = -g
 #LDFLAGS = -L.
 #LDLIBS = -lxxx
 SRCS = $(wildcard *.c)
@@ -13,7 +13,8 @@ test: $(PROGRAM)
 
 release:
 	$(MAKE) clean
-	$(MAKE) CFLAGS=-O3 LDFLAGS="$(LDFLAGS) -s"
+	$(MAKE) CFLAGS=-O3
+	strip $(PROGRAM)
 
 clean:
 	$(RM) $(PROGRAM) $(OBJS)
